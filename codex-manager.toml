@@ -1,0 +1,4 @@
+data_dir = "codex-save"
+bind = "127.0.0.1:5178"
+trash_dir = ".codex-manager-trash"
+metadata_path = ".codex-manager.json"
