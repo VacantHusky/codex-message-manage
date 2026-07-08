@@ -1,4 +1,4 @@
-import { defineComponent, h, reactive, ref } from 'vue'
+import { defineComponent, h, reactive, ref, watch } from 'vue'
 import { apiGet, apiPost, type EventPage, type SessionEvent } from '../api'
 import { ElCheckbox, ElMessage, ElMessageBox } from 'element-plus'
 
@@ -30,6 +30,14 @@ const DeleteEventConfirmContent = defineComponent({
   },
 })
 
+const EVENT_PAGE_SIZE_KEY = 'codex-message-manage:event-page-size'
+const DEFAULT_EVENT_PAGE_SIZE = 12
+
+function storedEventPageSize() {
+  const value = Number(window.localStorage.getItem(EVENT_PAGE_SIZE_KEY))
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_EVENT_PAGE_SIZE
+}
+
 export function useThreadEvents(selectedId: ReturnType<typeof ref<string>>) {
   const events = ref<SessionEvent[]>([])
   const eventsTotal = ref(0)
@@ -42,8 +50,15 @@ export function useThreadEvents(selectedId: ReturnType<typeof ref<string>>) {
     payload_type: '',
     role: '',
     q: '',
-    limit: 10,
+    limit: storedEventPageSize(),
   })
+
+  watch(
+    () => eventFilters.limit,
+    (limit) => {
+      window.localStorage.setItem(EVENT_PAGE_SIZE_KEY, String(limit))
+    },
+  )
 
   async function loadEvents(reset = false) {
     if (!selectedId.value) return
