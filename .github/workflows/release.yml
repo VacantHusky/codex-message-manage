@@ -1,0 +1,147 @@
+name: 发布版本
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag，例如 v0.1.0"
+        required: true
+        default: "v0.1.0"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: 构建 ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: codex-message-manage
+          - name: linux-arm64
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            binary: codex-message-manage
+            linker: aarch64-linux-gnu-gcc
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: codex-message-manage.exe
+          - name: macos-x64
+            os: macos-13
+            target: x86_64-apple-darwin
+            binary: codex-message-manage
+          - name: macos-arm64
+            os: macos-14
+            target: aarch64-apple-darwin
+            binary: codex-message-manage
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 构建前端
+        shell: bash
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
+      - name: 安装 Rust target
+        shell: bash
+        run: rustup target add "${{ matrix.target }}"
+
+      - name: 安装 Linux ARM64 链接器
+        if: matrix.linker != ''
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: 构建后端
+        shell: bash
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
+        run: cargo build --release --target "${{ matrix.target }}"
+
+      - name: 打包
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          package_name="$(awk -F'"' '/^name = / { print $2; exit }' Cargo.toml)"
+          package_version="$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)"
+          stage_name="${package_name}-${package_version}-${{ matrix.target }}"
+          stage_dir="dist/${stage_name}"
+          mkdir -p "${stage_dir}/frontend"
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "${stage_dir}/"
+          cp -R frontend/dist "${stage_dir}/frontend/dist"
+          cp codex-manager.toml README.md LICENSE "${stage_dir}/"
+          tar -C dist -czf "dist/${stage_name}.tar.gz" "${stage_name}"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-message-manage-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: 发布 Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: 创建 Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_INPUT: ${{ github.event.inputs.tag }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            tag="$TAG_INPUT"
+          else
+            tag="$GITHUB_REF_NAME"
+          fi
+          title="Codex Message Manage ${tag}"
+          cat > release-notes.md <<'EOF'
+          第一个公开版本。
+
+          包含内容：
+          - 本地 Codex 会话列表、详情和时间线浏览
+          - 会话标题、运行信息和历史记录编辑
+          - 会话备份、删除、恢复和统计
+          - Linux、Windows、macOS 常见平台构建包
+
+          使用方式：
+          1. 下载对应平台的压缩包。
+          2. 解压后运行 `codex-message-manage` 或 `codex-message-manage.exe`。
+          3. 浏览器访问 `http://127.0.0.1:5178`。
+          EOF
+          gh release create "$tag" release-assets/*.tar.gz \
+            --title "$title" \
+            --notes-file release-notes.md \
+            --verify-tag
