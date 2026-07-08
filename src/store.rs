@@ -1509,6 +1509,112 @@ impl AppStore {
             .collect())
     }
 
+    pub fn update_history(
+        &self,
+        id: &str,
+        ts: i64,
+        request: UpdateHistoryRequest,
+    ) -> Result<ThreadWriteResult, StoreError> {
+        if request.text.trim().is_empty() {
+            return Err(StoreError::BadRequest(
+                "history text cannot be empty".to_string(),
+            ));
+        }
+        self.rewrite_history(id, ts, Some(request.text))?;
+        Ok(ThreadWriteResult {
+            ok: true,
+            thread_id: id.to_string(),
+            message: "历史记录已更新".to_string(),
+            backup_dir: None,
+        })
+    }
+
+    pub fn delete_history(
+        &self,
+        id: &str,
+        ts: i64,
+        request: DeleteHistoryRequest,
+    ) -> Result<ThreadWriteResult, StoreError> {
+        if !request.confirm {
+            return Err(StoreError::BadRequest(
+                "confirm must be true before deleting history".to_string(),
+            ));
+        }
+        self.rewrite_history(id, ts, None)?;
+        Ok(ThreadWriteResult {
+            ok: true,
+            thread_id: id.to_string(),
+            message: "历史记录已删除".to_string(),
+            backup_dir: None,
+        })
+    }
+
+    fn rewrite_history(
+        &self,
+        id: &str,
+        ts: i64,
+        replacement_text: Option<String>,
+    ) -> Result<(), StoreError> {
+        let history_path = self.history_path.read().unwrap().clone();
+        if !history_path.exists() {
+            return Err(StoreError::NotFound("history.jsonl".to_string()));
+        }
+        let file = fs::File::open(&history_path)?;
+        let temp_path = history_path.with_extension("jsonl.tmp");
+        let mut lines = Vec::new();
+        let mut matches = 0usize;
+
+        for line in BufReader::new(file).lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let mut value: Value = serde_json::from_str(&line)?;
+            let is_match = value
+                .get("session_id")
+                .and_then(Value::as_str)
+                .is_some_and(|session_id| session_id == id)
+                && value
+                    .get("ts")
+                    .and_then(Value::as_i64)
+                    .is_some_and(|value_ts| value_ts == ts);
+
+            if is_match {
+                matches += 1;
+                if matches > 1 {
+                    return Err(StoreError::BadRequest(format!(
+                        "multiple history rows matched session {id} ts {ts}"
+                    )));
+                }
+                if let Some(text) = replacement_text.as_ref() {
+                    if let Some(object) = value.as_object_mut() {
+                        object.insert("text".to_string(), Value::String(text.clone()));
+                    } else {
+                        return Err(StoreError::BadRequest(
+                            "history row is not a JSON object".to_string(),
+                        ));
+                    }
+                    lines.push(serde_json::to_string(&value)?);
+                }
+                continue;
+            }
+
+            lines.push(line);
+        }
+
+        if matches == 0 {
+            return Err(StoreError::NotFound(format!("history {id} {ts}")));
+        }
+
+        let mut output = lines.join("\n");
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        fs::write(&temp_path, output)?;
+        fs::rename(temp_path, history_path)?;
+        Ok(())
+    }
+
     fn thread_history(&self, id: &str, limit: usize) -> Result<Vec<HistoryEntry>, StoreError> {
         let history_path = self.history_path.read().unwrap();
         if !history_path.exists() {

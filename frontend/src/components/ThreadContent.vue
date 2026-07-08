@@ -31,6 +31,7 @@ import {
   runtimeLabel,
 } from '../utils/format'
 import type { ThreadSummary, SearchHit, SessionEvent } from '../api'
+import type { HistoryEntry } from '../api'
 import type { UpdateRuntimeRequest } from '../api'
 
 const props = defineProps<{
@@ -67,6 +68,8 @@ const emit = defineEmits<{
   (e: 'load-events', reset: boolean): void
   (e: 'load-all-events'): void
   (e: 'event-saved'): void
+  (e: 'history-saved', item: HistoryEntry, text: string): void
+  (e: 'delete-history', item: HistoryEntry): void
   (e: 'delete-event', event: SessionEvent): void
   (e: 'toggle-event', event: SessionEvent): void
   (e: 'search'): void
@@ -118,6 +121,9 @@ const runtimeForm = reactive<UpdateRuntimeRequest>({
 const threadEditVisible = ref(false)
 const titleText = ref('')
 const savingRuntime = ref(false)
+const historyEditVisible = ref(false)
+const editingHistory = ref<HistoryEntry | null>(null)
+const historyText = ref('')
 
 watch(
   () => props.selectedThread,
@@ -156,6 +162,18 @@ function openThreadEdit() {
   runtimeForm.thread_source = props.selectedThread?.thread_source || 'user'
   runtimeForm.reasoning_effort = props.selectedThread?.reasoning_effort || ''
   threadEditVisible.value = true
+}
+
+function openHistoryEdit(item: HistoryEntry) {
+  editingHistory.value = item
+  historyText.value = item.text
+  historyEditVisible.value = true
+}
+
+function handleSaveHistory() {
+  if (!editingHistory.value) return
+  emit('history-saved', editingHistory.value, historyText.value)
+  historyEditVisible.value = false
 }
 
 async function copyWithToast(text?: string) {
@@ -385,6 +403,16 @@ async function handleSaveEdit() {
                 <span class="prewrap">{{ row.text }}</span>
               </template>
             </el-table-column>
+            <el-table-column label="操作" width="150" align="right">
+              <template #default="{ row }">
+                <el-button size="small" text :icon="EditPen" @click="openHistoryEdit(row)">
+                  编辑
+                </el-button>
+                <el-button size="small" text type="danger" :icon="Delete" @click="emit('delete-history', row)">
+                  删除
+                </el-button>
+              </template>
+            </el-table-column>
           </el-table>
         </el-tab-pane>
 
@@ -557,6 +585,23 @@ async function handleSaveEdit() {
         <div class="drawer-section">
           <pre class="drawer-json">{{ detailJson }}</pre>
         </div>
+      </template>
+    </el-drawer>
+
+    <el-drawer
+      v-model="historyEditVisible"
+      title="编辑历史"
+      size="520px"
+      direction="rtl"
+    >
+      <el-input
+        v-model="historyText"
+        type="textarea"
+        :autosize="{ minRows: 10, maxRows: 24 }"
+      />
+      <template #footer>
+        <el-button @click="historyEditVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleSaveHistory">保存</el-button>
       </template>
     </el-drawer>
 

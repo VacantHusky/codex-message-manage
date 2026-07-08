@@ -68,6 +68,16 @@ pub struct UpdateEventRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct UpdateHistoryRequest {
+    pub text: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteHistoryRequest {
+    pub confirm: bool,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct BackupRequest {
     pub note: Option<String>,
 }

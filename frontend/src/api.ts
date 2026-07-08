@@ -59,6 +59,8 @@ export interface ThreadPage {
 }
 
 export interface HistoryEntry {
+  session_id: string
+  ts: number
   ts_text: string
   text: string
 }

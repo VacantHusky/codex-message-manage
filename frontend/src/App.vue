@@ -11,7 +11,8 @@ import { useBackup } from './composables/useBackup'
 import { useStats } from './composables/useStats'
 import { useConfig } from './composables/useConfig'
 import { useDelete } from './composables/useDelete'
-import type { ThreadSummary, SearchHit, BackupInfo, SessionEvent } from './api'
+import { apiPost, type ThreadSummary, type SearchHit, type BackupInfo, type SessionEvent, type HistoryEntry } from './api'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 const {
   threads,
@@ -213,6 +214,33 @@ async function handleDeleteEvent(event: SessionEvent) {
     await Promise.all([loadThreadDetail(selectedId.value), loadEvents(true)])
   }
 }
+
+async function handleHistorySaved(item: HistoryEntry, text: string) {
+  if (!selectedId.value) return
+  try {
+    await apiPost(`/api/threads/${selectedId.value}/history/${item.ts}`, { text })
+    ElMessage.success('历史记录已更新')
+    await loadThreadDetail(selectedId.value)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+  }
+}
+
+async function handleDeleteHistory(item: HistoryEntry) {
+  if (!selectedId.value) return
+  try {
+    await ElMessageBox.confirm('删除会直接重写 history.jsonl，且不会自动备份。', '删除历史确认', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+    await apiPost(`/api/threads/${selectedId.value}/history/${item.ts}/delete`, { confirm: true })
+    ElMessage.success('历史记录已删除')
+    await loadThreadDetail(selectedId.value)
+  } catch (error) {
+    if (error instanceof Error) ElMessage.error(error.message)
+  }
+}
 </script>
 
 <template>
@@ -257,6 +285,8 @@ async function handleDeleteEvent(event: SessionEvent) {
       @load-events="loadEvents"
       @load-all-events="loadAllEvents"
       @event-saved="handleEventSaved"
+      @history-saved="handleHistorySaved"
+      @delete-history="handleDeleteHistory"
       @delete-event="handleDeleteEvent"
       @toggle-event="toggleEvent"
       @search="runSearch"
