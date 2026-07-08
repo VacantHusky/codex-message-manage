@@ -39,11 +39,12 @@ const {
 const {
   events,
   eventsTotal,
+  eventPage,
   loadingEvents,
   expandedEvents,
   eventFilters,
   loadEvents,
-  loadAllEvents,
+  changeEventPage,
   isEventExpanded,
   toggleEvent,
   eventText,
@@ -266,6 +267,7 @@ async function handleDeleteHistory(item: HistoryEntry) {
       :selected-thread="selectedThread"
       :events="events"
       :events-total="eventsTotal"
+      :event-page="eventPage"
       :loading-events="loadingEvents"
       :event-filters="eventFilters"
       :active-tab="activeTab"
@@ -283,7 +285,7 @@ async function handleDeleteHistory(item: HistoryEntry) {
       @delete="handlePreviewDelete"
       @clear-logs="handleClearLogs"
       @load-events="loadEvents"
-      @load-all-events="loadAllEvents"
+      @change-event-page="changeEventPage"
       @event-saved="handleEventSaved"
       @history-saved="handleHistorySaved"
       @delete-history="handleDeleteHistory"

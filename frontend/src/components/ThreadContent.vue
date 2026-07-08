@@ -40,6 +40,7 @@ const props = defineProps<{
   selectedThread?: ThreadSummary
   events: SessionEvent[]
   eventsTotal: number
+  eventPage: number
   loadingEvents: boolean
   eventFilters: {
     event_type: string
@@ -66,7 +67,7 @@ const emit = defineEmits<{
   (e: 'delete'): void
   (e: 'clear-logs'): void
   (e: 'load-events', reset: boolean): void
-  (e: 'load-all-events'): void
+  (e: 'change-event-page', page: number): void
   (e: 'event-saved'): void
   (e: 'history-saved', item: HistoryEntry, text: string): void
   (e: 'delete-history', item: HistoryEntry): void
@@ -307,7 +308,7 @@ async function handleSaveEdit() {
 
     <template v-else>
       <el-tabs :model-value="activeTab" @update:model-value="(val: string) => emit('update:activeTab', val)" class="detail-tabs">
-        <el-tab-pane label="时间线" name="timeline">
+        <el-tab-pane label="时间线" name="timeline" class="timeline-pane">
           <section class="event-toolbar">
             <el-select v-model="eventFilters.event_type" clearable placeholder="事件类型">
               <el-option
@@ -377,21 +378,17 @@ async function handleSaveEdit() {
           </VirtualList>
 
           <div class="load-more">
-            <span class="muted">{{ events.length }} / {{ eventsTotal }}</span>
-            <el-button
-              :disabled="events.length >= eventsTotal"
-              :loading="loadingEvents"
-              @click="emit('load-events', false)"
-            >
-              加载更多
-            </el-button>
-            <el-button
-              :disabled="events.length >= eventsTotal"
-              :loading="loadingEvents"
-              @click="emit('load-all-events')"
-            >
-              加载全部
-            </el-button>
+            <span class="muted">共 {{ eventsTotal }} 条</span>
+            <el-pagination
+              background
+              layout="prev, pager, next, sizes"
+              :current-page="eventPage"
+              :page-size="eventFilters.limit"
+              :page-sizes="[10, 12, 15, 20, 50, 100]"
+              :total="eventsTotal"
+              @current-change="(page: number) => emit('change-event-page', page)"
+              @size-change="(size: number) => { eventFilters.limit = size; emit('load-events', true) }"
+            />
           </div>
         </el-tab-pane>
 
@@ -782,15 +779,23 @@ async function handleSaveEdit() {
   min-height: 0;
 }
 
+.timeline-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .event-toolbar {
   display: grid;
   grid-template-columns: 140px 190px 120px minmax(220px, 1fr) auto;
-  margin: 10px 0 18px;
+  flex: 0 0 auto;
+  margin: 10px 0 12px;
 }
 
 .timeline-virtual {
-  height: calc(100% - 140px);
-  min-height: 200px;
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   position: relative;
@@ -913,10 +918,12 @@ async function handleSaveEdit() {
 
 .load-more {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
-  margin-top: 14px;
+  margin-top: 12px;
 }
 
 .tab-toolbar {

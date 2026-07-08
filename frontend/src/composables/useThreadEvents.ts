@@ -33,6 +33,7 @@ const DeleteEventConfirmContent = defineComponent({
 export function useThreadEvents(selectedId: ReturnType<typeof ref<string>>) {
   const events = ref<SessionEvent[]>([])
   const eventsTotal = ref(0)
+  const eventPage = ref(1)
   const loadingEvents = ref(false)
   const expandedEvents = ref(new Set<number>())
 
@@ -41,22 +42,24 @@ export function useThreadEvents(selectedId: ReturnType<typeof ref<string>>) {
     payload_type: '',
     role: '',
     q: '',
-    limit: 80,
+    limit: 10,
   })
 
   async function loadEvents(reset = false) {
     if (!selectedId.value) return
+    if (reset) eventPage.value = 1
     loadingEvents.value = true
     try {
+      const offset = (eventPage.value - 1) * eventFilters.limit
       const page = await apiGet<EventPage>(`/api/threads/${selectedId.value}/events`, {
         event_type: eventFilters.event_type,
         payload_type: eventFilters.payload_type,
         role: eventFilters.role,
         q: eventFilters.q,
-        offset: reset ? 0 : events.value.length,
+        offset,
         limit: eventFilters.limit,
       })
-      events.value = reset ? page.items : events.value.concat(page.items)
+      events.value = page.items
       eventsTotal.value = page.total_matched
     } catch (error) {
       ElMessage.error(messageOf(error))
@@ -65,35 +68,9 @@ export function useThreadEvents(selectedId: ReturnType<typeof ref<string>>) {
     }
   }
 
-  async function loadAllEvents() {
-    if (!selectedId.value) return
-    loadingEvents.value = true
-    try {
-      const limit = 500
-      const all: SessionEvent[] = []
-      let total = 0
-      let offset = 0
-      do {
-        const page = await apiGet<EventPage>(`/api/threads/${selectedId.value}/events`, {
-          event_type: eventFilters.event_type,
-          payload_type: eventFilters.payload_type,
-          role: eventFilters.role,
-          q: eventFilters.q,
-          offset,
-          limit,
-        })
-        total = page.total_matched
-        all.push(...page.items)
-        offset += page.items.length
-        if (page.items.length === 0) break
-      } while (all.length < total)
-      events.value = all
-      eventsTotal.value = total
-    } catch (error) {
-      ElMessage.error(messageOf(error))
-    } finally {
-      loadingEvents.value = false
-    }
+  async function changeEventPage(page: number) {
+    eventPage.value = page
+    await loadEvents(false)
   }
 
   function isEventExpanded(event: SessionEvent) {
@@ -166,11 +143,12 @@ export function useThreadEvents(selectedId: ReturnType<typeof ref<string>>) {
   return {
     events,
     eventsTotal,
+    eventPage,
     loadingEvents,
     expandedEvents,
     eventFilters,
     loadEvents,
-    loadAllEvents,
+    changeEventPage,
     isEventExpanded,
     toggleEvent,
     eventText,
