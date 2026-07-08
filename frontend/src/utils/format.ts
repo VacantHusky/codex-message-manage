@@ -70,6 +70,7 @@ export function boolLabel(value: boolean) {
 }
 
 export function eventTagType(event: SessionEvent) {
+  if (event.payload_type === 'token_count') return 'info'
   if (event.payload_type === 'message') return event.role === 'user' ? 'primary' : 'success'
   if (event.payload_type?.includes('tool') || event.payload_type?.includes('function')) return 'warning'
   if (event.event_type === 'event_msg') return 'info'
@@ -87,6 +88,7 @@ export const payloadTypeLabels: Record<string, string> = {
   agent_message: '助手消息',
   task_started: '任务开始',
   task_complete: '任务完成',
+  token_count: 'Token 统计',
 }
 
 export const eventTypeLabels: Record<string, string> = {
@@ -116,6 +118,7 @@ export const payloadTypeOptions = [
   'agent_message',
   'task_started',
   'task_complete',
+  'token_count',
 ]
 
 export function payloadTypeName(type?: string) {

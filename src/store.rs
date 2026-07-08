@@ -1999,12 +1999,98 @@ fn display_text(payload: &Value, event_type: &str, payload_type: Option<&str>) -
             .get("last_agent_message")
             .and_then(Value::as_str)
             .map(ToString::to_string),
+        ("event_msg", Some("token_count")) => token_count_text(payload),
         ("compacted", _) => payload
             .get("message")
             .and_then(Value::as_str)
             .map(ToString::to_string),
         _ => None,
     }
+}
+
+fn token_count_text(payload: &Value) -> Option<String> {
+    let info = payload.get("info")?;
+    let total_usage = info.get("total_token_usage").unwrap_or(&Value::Null);
+    let last_usage = info.get("last_token_usage").unwrap_or(&Value::Null);
+    let total_tokens = total_usage
+        .get("total_tokens")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    let last_tokens = last_usage
+        .get("total_tokens")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    let input_tokens = total_usage
+        .get("input_tokens")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    let cached_input_tokens = total_usage
+        .get("cached_input_tokens")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    let output_tokens = total_usage
+        .get("output_tokens")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    let reasoning_output_tokens = total_usage
+        .get("reasoning_output_tokens")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    let context_window = info
+        .get("model_context_window")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+
+    let mut parts = vec![format!(
+        "总计 {} tokens，本轮 {}，输入 {}，缓存 {}，输出 {}，推理 {}",
+        format_number(total_tokens),
+        format_number(last_tokens),
+        format_number(input_tokens),
+        format_number(cached_input_tokens),
+        format_number(output_tokens),
+        format_number(reasoning_output_tokens),
+    )];
+    if context_window > 0 {
+        parts.push(format!("上下文 {}", format_number(context_window)));
+    }
+
+    if let Some(rate_limits) = payload.get("rate_limits") {
+        let primary = rate_limits
+            .get("primary")
+            .and_then(|value| value.get("used_percent"))
+            .and_then(Value::as_f64);
+        let secondary = rate_limits
+            .get("secondary")
+            .and_then(|value| value.get("used_percent"))
+            .and_then(Value::as_f64);
+        match (primary, secondary) {
+            (Some(primary), Some(secondary)) => {
+                parts.push(format!("限额 {:.0}%/{:.0}%", primary, secondary));
+            }
+            (Some(primary), None) => {
+                parts.push(format!("限额 {:.0}%", primary));
+            }
+            _ => {}
+        }
+    }
+
+    Some(parts.join("，"))
+}
+
+fn format_number(value: i64) -> String {
+    let text = value.abs().to_string();
+    let mut out = String::new();
+    for (index, ch) in text.chars().rev().enumerate() {
+        if index > 0 && index % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    let mut out: String = out.chars().rev().collect();
+    if value < 0 {
+        out.insert(0, '-');
+    }
+    out
 }
 
 /// 清理 Codex 在中文 Windows 上捕获子进程输出时产生的乱码字符
@@ -2296,6 +2382,42 @@ mod tests {
         let event = event_from_value(0, raw).unwrap();
         assert_eq!(event.display_text.as_deref(), Some("hello"));
         assert_eq!(event.payload_type.as_deref(), Some("message"));
+    }
+
+    #[test]
+    fn extracts_display_text_from_token_count() {
+        let raw: Value = serde_json::json!({
+            "timestamp": "2026-01-01T00:00:00Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": {
+                        "input_tokens": 24729,
+                        "cached_input_tokens": 18176,
+                        "output_tokens": 544,
+                        "reasoning_output_tokens": 24,
+                        "total_tokens": 25273
+                    },
+                    "last_token_usage": {
+                        "total_tokens": 13178
+                    },
+                    "model_context_window": 258400
+                },
+                "rate_limits": {
+                    "primary": { "used_percent": 1.0 },
+                    "secondary": { "used_percent": 24.0 }
+                }
+            }
+        });
+        let event = event_from_value(0, raw).unwrap();
+        assert_eq!(event.payload_type.as_deref(), Some("token_count"));
+        assert_eq!(
+            event.display_text.as_deref(),
+            Some(
+                "总计 25,273 tokens，本轮 13,178，输入 24,729，缓存 18,176，输出 544，推理 24，上下文 258,400，限额 1%/24%"
+            )
+        );
     }
 
     #[test]
