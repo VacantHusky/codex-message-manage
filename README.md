@@ -18,30 +18,9 @@
 - Node.js 18+
 - npm 或 yarn
 
-### 安装依赖
-
-**Windows 用户：**
-```bash
-setup.bat
-```
-
-**Linux/macOS 用户：**
-```bash
-# 安装 Rust（如果未安装）
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# 安装前端依赖
-cd frontend && npm install
-```
-
 ### 启动项目
 
-**Windows 用户：**
-```bash
-start.bat
-```
-
-**Linux/macOS 用户：**
+**开发：**
 ```bash
 # 启动后端
 cargo run
@@ -49,6 +28,10 @@ cargo run
 # 启动前端（新终端）
 cd frontend && npm run dev
 ```
+
+**使用构建的程序：**
+
+在[releases](https://github.com/VacantHusky/codex-message-manage/releases)下载最新的程序，解压运行。
 
 ### 访问应用
 
