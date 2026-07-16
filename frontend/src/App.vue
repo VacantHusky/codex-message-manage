@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import ThreadContent from './components/ThreadContent.vue'
 import AppDialogs from './components/AppDialogs.vue'
@@ -114,6 +114,11 @@ const {
 
 onMounted(async () => {
   await Promise.all([loadConfig(), loadOverview(), loadThreads()])
+})
+
+watch(selectedId, () => {
+  searchText.value = ''
+  searchResults.value = []
 })
 
 async function reloadAll() {
@@ -291,7 +296,7 @@ async function handleDeleteHistory(item: HistoryEntry) {
       @delete-history="handleDeleteHistory"
       @delete-event="handleDeleteEvent"
       @toggle-event="toggleEvent"
-      @search="runSearch"
+      @search="runSearch(selectedId)"
       @search-hit="handleSearchHit"
       @update:search-text="(val: string) => searchText = val"
       @update:active-tab="(val: string) => activeTab = val"

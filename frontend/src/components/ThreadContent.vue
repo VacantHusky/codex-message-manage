@@ -285,10 +285,11 @@ async function handleSaveEdit() {
         @update:model-value="(val: string) => emit('update:searchText', val)"
         :prefix-icon="Search"
         clearable
-        placeholder="全局搜索消息、历史、标题"
+        :disabled="!selectedThread"
+        placeholder="搜索当前会话的消息、历史、标题"
         @keyup.enter="emit('search')"
       />
-      <el-button type="primary" :loading="searching" @click="emit('search')">搜索</el-button>
+      <el-button type="primary" :loading="searching" :disabled="!selectedThread" @click="emit('search')">搜索</el-button>
     </section>
 
     <section v-if="searchResults.length" class="search-results">

@@ -32,6 +32,7 @@ pub struct EventQuery {
 #[derive(Debug, Deserialize)]
 pub struct SearchQuery {
     pub q: String,
+    pub thread_id: Option<String>,
     pub limit: Option<usize>,
 }
 

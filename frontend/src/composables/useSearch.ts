@@ -7,7 +7,7 @@ export function useSearch() {
   const searching = ref(false)
   const searchResults = ref<SearchHit[]>([])
 
-  async function runSearch() {
+  async function runSearch(threadId?: string) {
     const q = searchText.value.trim()
     if (!q) {
       searchResults.value = []
@@ -15,7 +15,7 @@ export function useSearch() {
     }
     searching.value = true
     try {
-      const data = await apiGet<SearchResponse>('/api/search', { q, limit: 120 })
+      const data = await apiGet<SearchResponse>('/api/search', { q, thread_id: threadId, limit: 120 })
       searchResults.value = data.items
     } catch (error) {
       ElMessage.error(messageOf(error))

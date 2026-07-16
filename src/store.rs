@@ -499,7 +499,13 @@ impl AppStore {
         let q = normalize_query(Some(&query.q))
             .ok_or_else(|| StoreError::BadRequest("q is required".to_string()))?;
         let limit = query.limit.unwrap_or(80).clamp(1, 300);
-        let threads = self.load_threads().await?;
+        let mut threads = self.load_threads().await?;
+        if let Some(thread_id) = query.thread_id.as_deref() {
+            threads.retain(|thread| thread.id == thread_id);
+            if threads.is_empty() {
+                return Err(StoreError::NotFound(thread_id.to_string()));
+            }
+        }
         let mut by_id = HashMap::new();
         for thread in &threads {
             by_id.insert(thread.id.clone(), thread.clone());
@@ -531,6 +537,9 @@ impl AppStore {
         }
 
         for entry in self.all_history()? {
+            if !by_id.contains_key(&entry.session_id) {
+                continue;
+            }
             if contains_ci(&entry.text, &q) {
                 let thread = by_id.get(&entry.session_id);
                 items.push(SearchHit {
