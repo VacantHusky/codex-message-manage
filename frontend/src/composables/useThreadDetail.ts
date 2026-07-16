@@ -6,17 +6,20 @@ export function useThreadDetail(selectedId: ReturnType<typeof ref<string>>) {
   const loadingDetail = ref(false)
   const detail = ref<ThreadDetail>()
   const activeTab = ref('timeline')
+  let detailRequestId = 0
 
   const selectedThread = computed(() => detail.value?.thread)
 
   async function loadThreadDetail(id: string) {
+    const currentRequest = ++detailRequestId
     loadingDetail.value = true
     try {
-      detail.value = await apiGet<ThreadDetail>(`/api/threads/${id}`)
+      const nextDetail = await apiGet<ThreadDetail>(`/api/threads/${id}`)
+      if (currentRequest === detailRequestId) detail.value = nextDetail
     } catch (error) {
-      ElMessage.error(messageOf(error))
+      if (currentRequest === detailRequestId) ElMessage.error(messageOf(error))
     } finally {
-      loadingDetail.value = false
+      if (currentRequest === detailRequestId) loadingDetail.value = false
     }
   }
 

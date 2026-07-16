@@ -44,6 +44,7 @@ export function useThreadEvents(selectedId: ReturnType<typeof ref<string>>) {
   const eventPage = ref(1)
   const loadingEvents = ref(false)
   const expandedEvents = ref(new Set<number>())
+  let eventsRequestId = 0
 
   const eventFilters = reactive({
     event_type: '',
@@ -62,11 +63,13 @@ export function useThreadEvents(selectedId: ReturnType<typeof ref<string>>) {
 
   async function loadEvents(reset = false) {
     if (!selectedId.value) return
+    const threadId = selectedId.value
+    const currentRequest = ++eventsRequestId
     if (reset) eventPage.value = 1
     loadingEvents.value = true
     try {
       const offset = (eventPage.value - 1) * eventFilters.limit
-      const page = await apiGet<EventPage>(`/api/threads/${selectedId.value}/events`, {
+      const page = await apiGet<EventPage>(`/api/threads/${threadId}/events`, {
         event_type: eventFilters.event_type,
         payload_type: eventFilters.payload_type,
         role: eventFilters.role,
@@ -74,12 +77,13 @@ export function useThreadEvents(selectedId: ReturnType<typeof ref<string>>) {
         offset,
         limit: eventFilters.limit,
       })
+      if (currentRequest !== eventsRequestId || selectedId.value !== threadId) return
       events.value = page.items
       eventsTotal.value = page.total_matched
     } catch (error) {
-      ElMessage.error(messageOf(error))
+      if (currentRequest === eventsRequestId) ElMessage.error(messageOf(error))
     } finally {
-      loadingEvents.value = false
+      if (currentRequest === eventsRequestId) loadingEvents.value = false
     }
   }
 

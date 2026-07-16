@@ -7,6 +7,7 @@ export function useThreadHistory(selectedId: ReturnType<typeof ref<string>>) {
   const historyTotal = ref(0)
   const historyPage = ref(1)
   const loadingHistory = ref(false)
+  let historyRequestId = 0
 
   const historyFilters = reactive({
     limit: storedHistoryPageSize(),
@@ -19,14 +20,17 @@ export function useThreadHistory(selectedId: ReturnType<typeof ref<string>>) {
 
   async function loadHistory(reset = false) {
     if (!selectedId.value) return
+    const threadId = selectedId.value
+    const currentRequest = ++historyRequestId
     if (reset) historyPage.value = 1
     loadingHistory.value = true
     try {
       const offset = (historyPage.value - 1) * historyFilters.limit
-      const page = await apiGet<HistoryPage>(`/api/threads/${selectedId.value}/history`, {
+      const page = await apiGet<HistoryPage>(`/api/threads/${threadId}/history`, {
         offset,
         limit: historyFilters.limit,
       })
+      if (currentRequest !== historyRequestId || selectedId.value !== threadId) return
       if (page.items.length === 0 && page.total_matched > 0 && historyPage.value > 1) {
         historyPage.value = Math.ceil(page.total_matched / historyFilters.limit)
         await loadHistory(false)
@@ -35,9 +39,9 @@ export function useThreadHistory(selectedId: ReturnType<typeof ref<string>>) {
       historyItems.value = page.items
       historyTotal.value = page.total_matched
     } catch (error) {
-      ElMessage.error(messageOf(error))
+      if (currentRequest === historyRequestId) ElMessage.error(messageOf(error))
     } finally {
-      loadingHistory.value = false
+      if (currentRequest === historyRequestId) loadingHistory.value = false
     }
   }
 

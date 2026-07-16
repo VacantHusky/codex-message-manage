@@ -6,21 +6,24 @@ export function useSearch() {
   const searchText = ref('')
   const searching = ref(false)
   const searchResults = ref<SearchHit[]>([])
+  let requestId = 0
 
   async function runSearch(threadId?: string) {
     const q = searchText.value.trim()
+    const currentRequest = ++requestId
     if (!q) {
       searchResults.value = []
+      searching.value = false
       return
     }
     searching.value = true
     try {
       const data = await apiGet<SearchResponse>('/api/search', { q, thread_id: threadId, limit: 120 })
-      searchResults.value = data.items
+      if (currentRequest === requestId) searchResults.value = data.items
     } catch (error) {
-      ElMessage.error(messageOf(error))
+      if (currentRequest === requestId) ElMessage.error(messageOf(error))
     } finally {
-      searching.value = false
+      if (currentRequest === requestId) searching.value = false
     }
   }
 

@@ -9,17 +9,14 @@ import {
   payloadTypeName,
   runtimeLabel,
 } from '../utils/format'
-import type { DeletePreview, BackupInfo, StatsResponse, BrowseResponse } from '../api'
+import type { DeletePreview, StatsResponse, BrowseResponse } from '../api'
 
 defineProps<{
   deleteDialog: boolean
   deletePreview?: DeletePreview
   deleteConfirm: boolean
+  backupBeforeDelete: boolean
   deleting: boolean
-  backupDialog: boolean
-  backups: BackupInfo[]
-  restoring: string
-  backupDeleting: string
   statsDialog: boolean
   statsData?: StatsResponse
   changeDataDirDialog: boolean
@@ -33,10 +30,8 @@ defineProps<{
 const emit = defineEmits<{
   (e: 'update:deleteDialog', value: boolean): void
   (e: 'update:deleteConfirm', value: boolean): void
+  (e: 'update:backupBeforeDelete', value: boolean): void
   (e: 'confirm-delete'): void
-  (e: 'update:backupDialog', value: boolean): void
-  (e: 'restore-backup', item: BackupInfo): void
-  (e: 'delete-backup', item: BackupInfo): void
   (e: 'update:statsDialog', value: boolean): void
   (e: 'update:changeDataDirDialog', value: boolean): void
   (e: 'update:newDataDir', value: string): void
@@ -60,7 +55,7 @@ const emit = defineEmits<{
       <el-alert
         type="warning"
         :closable="false"
-        title="删除会移除会话文件和数据库记录，且不会自动备份；需要保留恢复点时，请先点击详情页的备份按钮。"
+        title="删除会移除会话文件和数据库记录。默认彻底删除；需要恢复点时可选择先创建备份。"
       />
       <h3>文件</h3>
       <el-table :data="deletePreview.files" max-height="220">
@@ -80,6 +75,13 @@ const emit = defineEmits<{
         <span>history.jsonl: <strong>{{ deletePreview.history_rows }}</strong></span>
       </div>
       <el-checkbox
+        :model-value="backupBeforeDelete"
+        @update:model-value="(val: boolean) => emit('update:backupBeforeDelete', val)"
+      >
+        删除前创建可恢复备份
+      </el-checkbox>
+      <br />
+      <el-checkbox
         :model-value="deleteConfirm"
         @update:model-value="(val: boolean) => emit('update:deleteConfirm', val)"
       >
@@ -97,57 +99,6 @@ const emit = defineEmits<{
         执行删除
       </el-button>
     </template>
-  </el-dialog>
-
-  <!-- 备份恢复对话框 -->
-  <el-dialog
-    :model-value="backupDialog"
-    @update:model-value="(val: boolean) => emit('update:backupDialog', val)"
-    title="备份与恢复"
-    width="900px"
-  >
-    <el-table :data="backups" max-height="460" class="backup-table">
-      <el-table-column label="时间" width="170">
-        <template #default="{ row }">
-          <span class="cell-text" :title="row.created_at">{{ formatTimestamp(row.created_at) }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="线程" min-width="200">
-        <template #default="{ row }">
-          <span class="cell-text mono" :title="row.thread_id">{{ row.thread_id }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="大小" width="90" align="right">
-        <template #default="{ row }">{{ formatBytes(row.bytes) }}</template>
-      </el-table-column>
-      <el-table-column label="备注" min-width="160">
-        <template #default="{ row }">
-          <span class="cell-text" :title="row.note || '-'">{{ row.note || '-' }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="180" align="center" fixed="right">
-        <template #default="{ row }">
-          <el-button
-            size="small"
-            type="primary"
-            plain
-            :loading="restoring === row.id"
-            @click="emit('restore-backup', row)"
-          >
-            恢复
-          </el-button>
-          <el-button
-            size="small"
-            type="danger"
-            plain
-            :loading="backupDeleting === row.id"
-            @click="emit('delete-backup', row)"
-          >
-            删除
-          </el-button>
-        </template>
-      </el-table-column>
-    </el-table>
   </el-dialog>
 
   <!-- 统计对话框 -->

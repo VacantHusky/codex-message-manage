@@ -56,6 +56,8 @@ pub struct UpdateArchiveRequest {
 #[derive(Debug, Deserialize)]
 pub struct DeleteRequest {
     pub confirm: bool,
+    #[serde(default)]
+    pub backup: bool,
 }
 
 #[derive(Debug, Deserialize)]

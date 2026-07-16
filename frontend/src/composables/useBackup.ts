@@ -4,7 +4,6 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 
 export function useBackup() {
   const backups = ref<BackupInfo[]>([])
-  const backupDialog = ref(false)
   const loading = ref(false)
   const restoring = ref('')
   const deleting = ref('')
@@ -21,11 +20,6 @@ export function useBackup() {
     } finally {
       loading.value = false
     }
-  }
-
-  async function openBackups() {
-    backupDialog.value = true
-    await loadBackups()
   }
 
   async function restoreBackup(item: BackupInfo) {
@@ -76,11 +70,9 @@ export function useBackup() {
 
   return {
     backups,
-    backupDialog,
     loading,
     restoring,
     deleting,
-    openBackups,
     loadBackups,
     restoreBackup,
     deleteBackup,

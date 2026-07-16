@@ -8,10 +8,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Windows: 用 MoveFileExW 替换被内存映射锁定的文件
-/// 先写入临时文件，再原子替换目标
 #[cfg(target_os = "windows")]
-fn windows_replace_file(source: &Path, target: &Path) -> Result<(), std::io::Error> {
+fn atomic_replace_file(source: &Path, target: &Path) -> Result<(), std::io::Error> {
     use std::os::windows::ffi::OsStrExt;
 
     unsafe extern "system" {
@@ -26,7 +24,7 @@ fn windows_replace_file(source: &Path, target: &Path) -> Result<(), std::io::Err
     const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
     const MOVEFILE_COPY_ALLOWED: u32 = 0x2;
 
-    let tmp = target.with_extension("restore_swap");
+    let tmp = restore_temp_path(target);
     fs::copy(source, &tmp)?;
 
     let wide_old: Vec<u16> = tmp
@@ -51,6 +49,33 @@ fn windows_replace_file(source: &Path, target: &Path) -> Result<(), std::io::Err
         let err = unsafe { GetLastError() };
         let _ = fs::remove_file(&tmp);
         return Err(std::io::Error::from_raw_os_error(err as i32));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn atomic_replace_file(source: &Path, target: &Path) -> Result<(), std::io::Error> {
+    let tmp = restore_temp_path(target);
+    fs::copy(source, &tmp)?;
+    if let Err(error) = fs::rename(&tmp, target) {
+        let _ = fs::remove_file(&tmp);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn restore_temp_path(target: &Path) -> PathBuf {
+    let mut value = target.as_os_str().to_os_string();
+    value.push(".restore_swap");
+    PathBuf::from(value)
+}
+
+fn remove_sqlite_sidecars(target: &Path) -> Result<(), std::io::Error> {
+    for suffix in ["-wal", "-shm"] {
+        let sidecar = PathBuf::from(format!("{}{suffix}", target.display()));
+        if sidecar.exists() {
+            fs::remove_file(sidecar)?;
+        }
     }
     Ok(())
 }
@@ -931,6 +956,18 @@ impl AppStore {
             ));
         }
         let thread = self.thread_by_id(id).await?;
+        let backup_dir = if request.backup {
+            self.backup_thread(
+                id,
+                BackupRequest {
+                    note: Some("删除前备份".to_string()),
+                },
+            )
+            .await?
+            .backup_dir
+        } else {
+            None
+        };
 
         self.rewrite_history_without_thread(id)?;
         self.delete_db_rows(id).await?;
@@ -943,8 +980,13 @@ impl AppStore {
         Ok(ThreadWriteResult {
             ok: true,
             thread_id: id.to_string(),
-            message: "已删除，未自动备份".to_string(),
-            backup_dir: None,
+            message: if request.backup {
+                "已删除，删除前备份已保留"
+            } else {
+                "已彻底删除"
+            }
+            .to_string(),
+            backup_dir,
         })
     }
 
@@ -995,51 +1037,59 @@ impl AppStore {
         let backup_id = format!("{}-{}", timestamp_slug(), id);
         let backup_dir = self.trash_dir.join(&backup_id);
         fs::create_dir_all(&backup_dir)?;
-        let mut files = Vec::new();
+        let result = async {
+            let mut files = Vec::new();
 
-        for path in self.files_for_thread(&thread) {
-            if path.exists() {
-                files.push(backup_file_with_manifest(&path, &backup_dir, "session")?);
+            for path in self.files_for_thread(&thread) {
+                if path.exists() {
+                    files.push(backup_file_with_manifest(&path, &backup_dir, "session")?);
+                }
             }
-        }
-        for path in self.database_files() {
-            if path.exists() {
-                files.push(backup_file_with_manifest(&path, &backup_dir, "database")?);
+            for path in self.database_files() {
+                if path.exists() {
+                    files.push(self.backup_database(&path, &backup_dir).await?);
+                }
             }
+            let history_path = self.history_path.read().unwrap().clone();
+            if history_path.exists() {
+                files.push(backup_file_with_manifest(
+                    &history_path,
+                    &backup_dir,
+                    "history",
+                )?);
+            }
+
+            let manifest = BackupManifest {
+                id: backup_id.clone(),
+                thread_id: id.to_string(),
+                created_at: Utc::now().to_rfc3339(),
+                note: request.note,
+                path: backup_dir.display().to_string(),
+                files,
+            };
+            fs::write(
+                backup_dir.join("manifest.json"),
+                serde_json::to_string_pretty(&manifest)?,
+            )?;
+
+            let mut metadata = self.load_metadata()?;
+            metadata.backups.retain(|item| item.id != backup_id);
+            metadata.backups.push(manifest);
+            self.save_metadata(&metadata)?;
+
+            Ok(ThreadWriteResult {
+                ok: true,
+                thread_id: id.to_string(),
+                message: "已创建备份".to_string(),
+                backup_dir: Some(backup_dir.display().to_string()),
+            })
         }
-        let history_path = self.history_path.read().unwrap();
-        if history_path.exists() {
-            files.push(backup_file_with_manifest(
-                &history_path,
-                &backup_dir,
-                "history",
-            )?);
+        .await;
+
+        if result.is_err() {
+            let _ = fs::remove_dir_all(&backup_dir);
         }
-
-        let manifest = BackupManifest {
-            id: backup_id.clone(),
-            thread_id: id.to_string(),
-            created_at: Utc::now().to_rfc3339(),
-            note: request.note,
-            path: backup_dir.display().to_string(),
-            files,
-        };
-        fs::write(
-            backup_dir.join("manifest.json"),
-            serde_json::to_string_pretty(&manifest)?,
-        )?;
-
-        let mut metadata = self.load_metadata()?;
-        metadata.backups.retain(|item| item.id != backup_id);
-        metadata.backups.push(manifest);
-        self.save_metadata(&metadata)?;
-
-        Ok(ThreadWriteResult {
-            ok: true,
-            thread_id: id.to_string(),
-            message: "已创建备份".to_string(),
-            backup_dir: Some(backup_dir.display().to_string()),
-        })
+        result
     }
 
     pub async fn restore_backup(
@@ -1061,16 +1111,10 @@ impl AppStore {
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)?;
             }
-            // 尝试直接替换
-            #[cfg(target_os = "windows")]
-            let success = windows_replace_file(&source, &target).is_ok();
-            #[cfg(not(target_os = "windows"))]
-            let success = {
-                if target.exists() {
-                    let _ = fs::remove_file(&target);
-                }
-                fs::copy(&source, &target).is_ok()
-            };
+            let is_sqlite_main = file.kind == "database"
+                && target.extension().and_then(|value| value.to_str()) == Some("sqlite");
+            let success = (!is_sqlite_main || remove_sqlite_sidecars(&target).is_ok())
+                && atomic_replace_file(&source, &target).is_ok();
             if success {
                 restored_files.push(file.original_path.clone());
             } else {
@@ -1868,16 +1912,41 @@ impl AppStore {
         let state_db = self.state_db.read().unwrap();
         let goals_db = self.goals_db.read().unwrap();
         let logs_db = self.logs_db.read().unwrap();
-        [&*state_db, &*goals_db, &*logs_db]
-            .into_iter()
-            .flat_map(|db| {
-                [
-                    db.to_path_buf(),
-                    PathBuf::from(format!("{}-wal", db.display())),
-                    PathBuf::from(format!("{}-shm", db.display())),
-                ]
-            })
-            .collect()
+        vec![state_db.clone(), goals_db.clone(), logs_db.clone()]
+    }
+
+    async fn backup_database(
+        &self,
+        path: &Path,
+        backup_dir: &Path,
+    ) -> Result<BackupFile, StoreError> {
+        let target_dir = backup_dir.join("files");
+        fs::create_dir_all(&target_dir)?;
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| StoreError::Other(format!("cannot backup {}", path.display())))?;
+        let target = target_dir.join(file_name);
+        if target.exists() {
+            fs::remove_file(&target)?;
+        }
+
+        let pool = self.connect(path).await?;
+        let snapshot_result = sqlx::query("VACUUM INTO ?")
+            .bind(target.display().to_string())
+            .execute(&pool)
+            .await;
+        pool.close().await;
+        if let Err(error) = snapshot_result {
+            let _ = fs::remove_file(&target);
+            return Err(error.into());
+        }
+
+        Ok(BackupFile {
+            kind: "database".to_string(),
+            original_path: path.display().to_string(),
+            bytes: target.metadata()?.len(),
+            backup_path: target.display().to_string(),
+        })
     }
 
     fn resolve_rollout_path(&self, id: &str, rollout_path: &str) -> Option<PathBuf> {
@@ -1925,7 +1994,6 @@ impl AppStore {
         let options = SqliteConnectOptions::from_str("sqlite:")?
             .filename(path)
             .create_if_missing(false)
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
             .read_only(true);
         Ok(SqlitePoolOptions::new()
             .max_connections(2)
@@ -2438,7 +2506,7 @@ fn now_seconds() -> i64 {
 }
 
 fn timestamp_slug() -> String {
-    Utc::now().format("%Y%m%dT%H%M%SZ").to_string()
+    Utc::now().format("%Y%m%dT%H%M%S%.3fZ").to_string()
 }
 
 fn date_to_ms(value: &str, start: bool) -> Option<i64> {
@@ -2454,6 +2522,121 @@ fn date_to_ms(value: &str, start: bool) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestStore {
+        _dir: tempfile::TempDir,
+        store: AppStore,
+        session_path: PathBuf,
+        history_path: PathBuf,
+        state_db: PathBuf,
+    }
+
+    async fn create_test_store() -> TestStore {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        let sessions_dir = data_dir.join("sessions");
+        fs::create_dir_all(&sessions_dir).unwrap();
+        let session_path = sessions_dir.join("thread-1.jsonl");
+        fs::write(
+            &session_path,
+            "{\"timestamp\":\"2026-01-01T00:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"original\"}}\n",
+        )
+        .unwrap();
+        let history_path = data_dir.join("history.jsonl");
+        fs::write(
+            &history_path,
+            "{\"session_id\":\"thread-1\",\"ts\":1767225600,\"text\":\"original history\"}\n",
+        )
+        .unwrap();
+
+        let state_db = data_dir.join("state_5.sqlite");
+        let state = create_test_database(&state_db).await;
+        sqlx::query(
+            r#"
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL, source TEXT NOT NULL, model_provider TEXT NOT NULL,
+                cwd TEXT NOT NULL, title TEXT NOT NULL, tokens_used INTEGER NOT NULL,
+                has_user_event INTEGER NOT NULL, archived INTEGER NOT NULL, cli_version TEXT,
+                first_user_message TEXT, model TEXT, reasoning_effort TEXT, sandbox_policy TEXT,
+                approval_mode TEXT, memory_mode TEXT, thread_source TEXT, preview TEXT,
+                created_at_ms INTEGER, updated_at_ms INTEGER, recency_at_ms INTEGER
+            )
+            "#,
+        )
+        .execute(&state)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO threads (
+                id, rollout_path, created_at, updated_at, source, model_provider, cwd, title,
+                tokens_used, has_user_event, archived, cli_version, first_user_message, model,
+                reasoning_effort, sandbox_policy, approval_mode, memory_mode, thread_source,
+                preview, created_at_ms, updated_at_ms, recency_at_ms
+            ) VALUES (?, ?, 1767225600, 1767225600, 'cli', 'openai', '/tmp/project',
+                      'Original title', 100, 1, 0, '1.0.0', 'original', 'gpt-test', 'medium',
+                      'workspace-write', 'on-request', 'default', 'cli', 'original',
+                      1767225600000, 1767225600000, 1767225600000)
+            "#,
+        )
+        .bind("thread-1")
+        .bind(session_path.display().to_string())
+        .execute(&state)
+        .await
+        .unwrap();
+        state.close().await;
+
+        let goals = create_test_database(&data_dir.join("goals_1.sqlite")).await;
+        sqlx::query("CREATE TABLE thread_goals (thread_id TEXT NOT NULL)")
+            .execute(&goals)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO thread_goals (thread_id) VALUES ('thread-1')")
+            .execute(&goals)
+            .await
+            .unwrap();
+        goals.close().await;
+
+        let logs = create_test_database(&data_dir.join("logs_2.sqlite")).await;
+        sqlx::query("CREATE TABLE logs (thread_id TEXT NOT NULL)")
+            .execute(&logs)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO logs (thread_id) VALUES ('thread-1')")
+            .execute(&logs)
+            .await
+            .unwrap();
+        logs.close().await;
+
+        let config = ManagerConfig {
+            data_dir: data_dir.display().to_string(),
+            bind: "127.0.0.1:0".to_string(),
+            trash_dir: dir.path().join("trash").display().to_string(),
+            metadata_path: dir.path().join("metadata.json").display().to_string(),
+        };
+        let store = AppStore::with_config(dir.path().join("config.toml"), config).unwrap();
+        TestStore {
+            _dir: dir,
+            store,
+            session_path,
+            history_path,
+            state_db,
+        }
+    }
+
+    async fn create_test_database(path: &Path) -> SqlitePool {
+        let options = SqliteConnectOptions::from_str("sqlite:")
+            .unwrap()
+            .filename(path)
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap()
+    }
 
     #[test]
     fn extracts_display_text_from_message() {
@@ -2542,6 +2725,191 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].snippet, "hit-1");
         assert_eq!(items[1].snippet, "hit-2");
+    }
+
+    #[tokio::test]
+    async fn creates_consistent_sqlite_backup_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.sqlite");
+        let options = SqliteConnectOptions::from_str("sqlite:")
+            .unwrap()
+            .filename(&source)
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE values_table (value TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO values_table (value) VALUES ('saved')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        let config = ManagerConfig {
+            data_dir: dir.path().display().to_string(),
+            bind: "127.0.0.1:0".to_string(),
+            trash_dir: dir.path().join("trash").display().to_string(),
+            metadata_path: dir.path().join("metadata.json").display().to_string(),
+        };
+        let store = AppStore::with_config(dir.path().join("config.toml"), config).unwrap();
+        let backup_dir = dir.path().join("backup");
+        let backup = store.backup_database(&source, &backup_dir).await.unwrap();
+
+        let snapshot = PathBuf::from(backup.backup_path);
+        let options = SqliteConnectOptions::from_str("sqlite:")
+            .unwrap()
+            .filename(snapshot)
+            .create_if_missing(false)
+            .read_only(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        let value: String = sqlx::query_scalar("SELECT value FROM values_table")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(value, "saved");
+    }
+
+    #[tokio::test]
+    async fn backup_and_restore_round_trip() {
+        let fixture = create_test_store().await;
+        let result = fixture
+            .store
+            .backup_thread(
+                "thread-1",
+                BackupRequest {
+                    note: Some("round trip".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+        let backup_id = Path::new(result.backup_dir.as_deref().unwrap())
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+
+        fs::write(&fixture.session_path, "changed\n").unwrap();
+        fs::write(&fixture.history_path, "changed\n").unwrap();
+        let state = fixture.store.connect_rw(&fixture.state_db).await.unwrap();
+        sqlx::query("UPDATE threads SET title = 'Changed title' WHERE id = 'thread-1'")
+            .execute(&state)
+            .await
+            .unwrap();
+        state.close().await;
+
+        fixture
+            .store
+            .restore_backup(&backup_id, RestoreRequest { confirm: true })
+            .await
+            .unwrap();
+
+        assert!(
+            fs::read_to_string(&fixture.session_path)
+                .unwrap()
+                .contains("original")
+        );
+        assert!(
+            fs::read_to_string(&fixture.history_path)
+                .unwrap()
+                .contains("original history")
+        );
+        assert_eq!(
+            fixture.store.thread_by_id("thread-1").await.unwrap().title,
+            "Original title"
+        );
+        assert!(fixture.store.list_backups().unwrap().items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_without_backup_is_permanent() {
+        let fixture = create_test_store().await;
+        let result = fixture
+            .store
+            .delete_thread(
+                "thread-1",
+                DeleteRequest {
+                    confirm: true,
+                    backup: false,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.message, "已彻底删除");
+        assert!(result.backup_dir.is_none());
+        assert!(!fixture.session_path.exists());
+        assert!(
+            !fs::read_to_string(&fixture.history_path)
+                .unwrap()
+                .contains("thread-1")
+        );
+        assert!(fixture.store.thread_by_id("thread-1").await.is_err());
+        assert!(fixture.store.list_backups().unwrap().items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_with_backup_keeps_restore_point() {
+        let fixture = create_test_store().await;
+        let result = fixture
+            .store
+            .delete_thread(
+                "thread-1",
+                DeleteRequest {
+                    confirm: true,
+                    backup: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(result.backup_dir.is_some());
+        let backups = fixture.store.list_backups().unwrap();
+        assert_eq!(backups.items.len(), 1);
+        assert_eq!(backups.items[0].thread_id, "thread-1");
+
+        fixture
+            .store
+            .restore_backup(&backups.items[0].id, RestoreRequest { confirm: true })
+            .await
+            .unwrap();
+        assert!(fixture.session_path.exists());
+        assert!(fixture.store.thread_by_id("thread-1").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn partial_restore_failure_keeps_backup() {
+        let fixture = create_test_store().await;
+        let result = fixture
+            .store
+            .backup_thread("thread-1", BackupRequest { note: None })
+            .await
+            .unwrap();
+        let backup_id = Path::new(result.backup_dir.as_deref().unwrap())
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let manifest = fixture.store.backup_manifest(&backup_id).unwrap();
+        fs::remove_file(&manifest.files[0].backup_path).unwrap();
+
+        let error = fixture
+            .store
+            .restore_backup(&backup_id, RestoreRequest { confirm: true })
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("备份已保留"));
+        assert_eq!(fixture.store.list_backups().unwrap().items.len(), 1);
+        assert!(Path::new(&manifest.path).exists());
     }
 
     #[test]

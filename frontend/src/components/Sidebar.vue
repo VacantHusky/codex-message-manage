@@ -50,7 +50,6 @@ const emit = defineEmits<{
   (e: 'search-hit', hit: SearchHit): void
   (e: 'reload'): void
   (e: 'open-stats'): void
-  (e: 'open-backups'): void
   (e: 'load-backups'): void
   (e: 'restore-backup', item: BackupInfo): void
   (e: 'delete-backup', item: BackupInfo): void

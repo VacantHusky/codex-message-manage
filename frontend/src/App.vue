@@ -69,11 +69,9 @@ const {
 
 const {
   backups,
-  backupDialog,
   loading: loadingBackups,
   restoring,
   deleting: backupDeleting,
-  openBackups,
   loadBackups,
   restoreBackup,
   deleteBackup,
@@ -87,6 +85,7 @@ const {
 
 const backingUp = ref(false)
 const clearingLogs = ref(false)
+let selectionRequestId = 0
 
 const {
   config,
@@ -106,6 +105,7 @@ const {
   selectBrowseDir,
 } = useConfig(async () => {
   // 清除旧的选中状态，避免旧目录的 ID 残留
+  selectionRequestId += 1
   selectedId.value = ''
   detail.value = undefined
   events.value = []
@@ -116,6 +116,7 @@ const {
   deleteDialog,
   deletePreview,
   deleteConfirm,
+  backupBeforeDelete,
   deleting,
   previewDelete,
   confirmDelete,
@@ -136,8 +137,10 @@ async function reloadAll() {
 
 async function openThread(row: ThreadSummary) {
   selectedId.value = row.id
+  const currentRequest = ++selectionRequestId
   activeTab.value = 'timeline'
   await loadThreadDetail(row.id)
+  if (currentRequest !== selectionRequestId) return
   await Promise.all([loadEvents(true), loadHistory(true)])
 }
 
@@ -146,8 +149,11 @@ async function handleSearchHit(hit: SearchHit) {
   if (result.type === 'existing' && result.thread) {
     await openThread(result.thread)
   } else if (result.type === 'new' && result.threadId) {
-    await loadThreadDetail(result.threadId)
     selectedId.value = result.threadId
+    const currentRequest = ++selectionRequestId
+    activeTab.value = 'timeline'
+    await loadThreadDetail(result.threadId)
+    if (currentRequest !== selectionRequestId) return
     await Promise.all([loadEvents(true), loadHistory(true)])
   }
 }
@@ -155,7 +161,7 @@ async function handleSearchHit(hit: SearchHit) {
 async function handleBackupSelected() {
   const success = await backupSelected(backingUp)
   if (success) {
-    await openBackups()
+    await loadBackups()
   }
 }
 
@@ -173,6 +179,7 @@ async function handlePreviewDelete() {
 async function handleConfirmDelete() {
   const success = await confirmDelete(selectedId.value)
   if (success) {
+    selectionRequestId += 1
     selectedId.value = ''
     detail.value = undefined
     events.value = []
@@ -275,7 +282,6 @@ async function handleDeleteHistory(item: HistoryEntry) {
       @search-hit="handleSearchHit"
       @reload="reloadAll"
       @open-stats="openStats"
-      @open-backups="openBackups"
       @load-backups="loadBackups"
       @restore-backup="handleRestoreBackup"
       @delete-backup="handleDeleteBackup"
@@ -328,11 +334,8 @@ async function handleDeleteHistory(item: HistoryEntry) {
       :delete-dialog="deleteDialog"
       :delete-preview="deletePreview"
       :delete-confirm="deleteConfirm"
+      :backup-before-delete="backupBeforeDelete"
       :deleting="deleting"
-      :backup-dialog="backupDialog"
-      :backups="backups"
-      :restoring="restoring"
-      :backup-deleting="backupDeleting"
       :stats-dialog="statsDialog"
       :stats-data="statsData"
       :change-data-dir-dialog="changeDataDirDialog"
@@ -343,10 +346,8 @@ async function handleDeleteHistory(item: HistoryEntry) {
       :browse-result="browseResult"
       @update:delete-dialog="(val: boolean) => deleteDialog = val"
       @update:delete-confirm="(val: boolean) => deleteConfirm = val"
+      @update:backup-before-delete="(val: boolean) => backupBeforeDelete = val"
       @confirm-delete="handleConfirmDelete"
-      @update:backup-dialog="(val: boolean) => backupDialog = val"
-      @restore-backup="handleRestoreBackup"
-      @delete-backup="handleDeleteBackup"
       @update:stats-dialog="(val: boolean) => statsDialog = val"
       @update:change-data-dir-dialog="(val: boolean) => changeDataDirDialog = val"
       @update:new-data-dir="(val: string) => newDataDir = val"

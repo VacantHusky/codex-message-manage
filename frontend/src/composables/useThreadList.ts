@@ -7,6 +7,7 @@ export function useThreadList() {
   const total = ref(0)
   const loadingThreads = ref(false)
   const selectedId = ref('')
+  let requestId = 0
 
   const filters = reactive({
     q: '',
@@ -19,6 +20,7 @@ export function useThreadList() {
   })
 
   async function loadThreads() {
+    const currentRequest = ++requestId
     loadingThreads.value = true
     try {
       const page = await apiGet<ThreadPage>('/api/threads', {
@@ -32,6 +34,7 @@ export function useThreadList() {
         page: filters.page,
         page_size: filters.page_size,
       })
+      if (currentRequest !== requestId) return null
       threads.value = page.items
       total.value = page.total
       if (!selectedId.value && page.items.length) {
@@ -39,10 +42,10 @@ export function useThreadList() {
       }
       return null
     } catch (error) {
-      ElMessage.error(messageOf(error))
+      if (currentRequest === requestId) ElMessage.error(messageOf(error))
       return null
     } finally {
-      loadingThreads.value = false
+      if (currentRequest === requestId) loadingThreads.value = false
     }
   }
 

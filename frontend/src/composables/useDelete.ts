@@ -6,12 +6,13 @@ export function useDelete() {
   const deleteDialog = ref(false)
   const deletePreview = ref<DeletePreview>()
   const deleteConfirm = ref(false)
+  const backupBeforeDelete = ref(false)
   const deleting = ref(false)
 
   async function previewDelete(selectedId: string) {
     if (!selectedId) return
     try {
-      await ElMessageBox.confirm('删除会修改 Codex 原始数据，且不会自动备份。', '删除确认', {
+      await ElMessageBox.confirm('删除会修改 Codex 原始数据，并默认彻底删除。', '删除确认', {
         confirmButtonText: '查看影响范围',
         cancelButtonText: '取消',
         type: 'warning',
@@ -21,6 +22,7 @@ export function useDelete() {
         {},
       )
       deleteConfirm.value = false
+      backupBeforeDelete.value = false
       deleteDialog.value = true
     } catch {
       // user cancelled
@@ -33,7 +35,7 @@ export function useDelete() {
     try {
       const result = await apiPost<{ message: string; backup_dir?: string }>(
         `/api/threads/${selectedId}/delete`,
-        { confirm: true },
+        { confirm: true, backup: backupBeforeDelete.value },
       )
       ElMessage.success(result.message)
       deleteDialog.value = false
@@ -54,6 +56,7 @@ export function useDelete() {
     deleteDialog,
     deletePreview,
     deleteConfirm,
+    backupBeforeDelete,
     deleting,
     previewDelete,
     confirmDelete,
