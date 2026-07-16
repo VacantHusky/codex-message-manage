@@ -143,14 +143,16 @@ watch(
           <span>Tokens</span>
           <strong>{{ formatCompactCount(filters.token_range[0]) }} - {{ formatCompactCount(filters.token_range[1]) }}</strong>
         </div>
-        <el-slider
-          v-model="filters.token_range"
-          range
-          :min="0"
-          :max="tokenSliderMax"
-          :step="tokenStep"
-          :format-tooltip="formatCompactCount"
-        />
+        <div class="token-slider-wrap">
+          <el-slider
+            v-model="filters.token_range"
+            range
+            :min="0"
+            :max="tokenSliderMax"
+            :step="tokenStep"
+            :format-tooltip="formatCompactCount"
+          />
+        </div>
       </div>
     </section>
 
@@ -321,6 +323,7 @@ watch(
 
 .token-filter {
   min-width: 0;
+  overflow: hidden;
 }
 
 .token-filter-head {
@@ -334,11 +337,22 @@ watch(
 .token-filter-head strong {
   color: #2d3748;
   font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.token-filter :deep(.el-slider) {
+.token-slider-wrap {
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 0 8px;
+}
+
+.token-slider-wrap :deep(.el-slider) {
   --el-slider-main-bg-color: #667eea;
-  margin: 0 8px;
+  width: 100%;
+  margin: 0;
 }
 
 .thread-title {
