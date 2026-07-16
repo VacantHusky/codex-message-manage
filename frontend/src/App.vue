@@ -42,13 +42,9 @@ const {
   eventsTotal,
   eventPage,
   loadingEvents,
-  expandedEvents,
   eventFilters,
   loadEvents,
   changeEventPage,
-  isEventExpanded,
-  toggleEvent,
-  eventText,
   saveEvent,
   deleteEvent,
 } = useThreadEvents(selectedId)
@@ -292,7 +288,6 @@ async function handleDeleteHistory(item: HistoryEntry) {
       :loading-history="loadingHistory"
       :history-filters="historyFilters"
       :active-tab="activeTab"
-      :expanded-events="expandedEvents"
       :search-text="searchText"
       :searching="searching"
       :search-results="searchResults"
@@ -313,7 +308,6 @@ async function handleDeleteHistory(item: HistoryEntry) {
       @history-saved="handleHistorySaved"
       @delete-history="handleDeleteHistory"
       @delete-event="handleDeleteEvent"
-      @toggle-event="toggleEvent"
       @search="runSearch(selectedId)"
       @search-hit="handleSearchHit"
       @update:search-text="(val: string) => searchText = val"
