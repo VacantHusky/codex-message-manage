@@ -30,6 +30,12 @@ pub struct EventQuery {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct HistoryQuery {
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct SearchQuery {
     pub q: String,
     pub thread_id: Option<String>,
@@ -284,6 +290,14 @@ pub struct HistoryEntry {
     pub ts: i64,
     pub ts_text: String,
     pub text: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HistoryPage {
+    pub items: Vec<HistoryEntry>,
+    pub total_matched: usize,
+    pub offset: usize,
+    pub limit: usize,
 }
 
 #[derive(Debug, Serialize)]

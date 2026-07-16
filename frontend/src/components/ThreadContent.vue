@@ -24,6 +24,7 @@ import {
   payloadTypeName,
   eventLabel,
   copyText,
+  formatDateTime,
   formatTimestamp,
   eventSummary,
   eventTypeOptions,
@@ -49,6 +50,13 @@ const props = defineProps<{
     q: string
     limit: number
   }
+  historyItems: HistoryEntry[]
+  historyTotal: number
+  historyPage: number
+  loadingHistory: boolean
+  historyFilters: {
+    limit: number
+  }
   activeTab: string
   expandedEvents: Set<number>
   searchText: string
@@ -68,6 +76,8 @@ const emit = defineEmits<{
   (e: 'clear-logs'): void
   (e: 'load-events', reset: boolean): void
   (e: 'change-event-page', page: number): void
+  (e: 'load-history', reset: boolean): void
+  (e: 'change-history-page', page: number): void
   (e: 'event-saved'): void
   (e: 'history-saved', item: HistoryEntry, text: string): void
   (e: 'delete-history', item: HistoryEntry): void
@@ -393,9 +403,19 @@ async function handleSaveEdit() {
           </div>
         </el-tab-pane>
 
-        <el-tab-pane label="历史" name="history">
-          <el-table :data="detail?.history ?? []" height="100%" virtual-scroll>
-            <el-table-column prop="ts_text" label="时间" width="220" />
+        <el-tab-pane label="历史" name="history" class="history-pane">
+          <el-table
+            v-loading="loadingHistory"
+            :data="historyItems"
+            class="history-table"
+            height="100%"
+            virtual-scroll
+          >
+            <el-table-column label="时间" width="220">
+              <template #default="{ row }">
+                <span :title="row.ts_text">{{ formatDateTime(row.ts_text) }}</span>
+              </template>
+            </el-table-column>
             <el-table-column label="内容">
               <template #default="{ row }">
                 <span class="prewrap">{{ row.text }}</span>
@@ -412,6 +432,20 @@ async function handleSaveEdit() {
               </template>
             </el-table-column>
           </el-table>
+
+          <div class="load-more">
+            <span class="muted">共 {{ historyTotal }} 条</span>
+            <el-pagination
+              background
+              layout="prev, pager, next, sizes"
+              :current-page="historyPage"
+              :page-size="historyFilters.limit"
+              :page-sizes="[10, 20, 50, 100]"
+              :total="historyTotal"
+              @current-change="(page: number) => emit('change-history-page', page)"
+              @size-change="(size: number) => { historyFilters.limit = size; emit('load-history', true) }"
+            />
+          </div>
         </el-tab-pane>
 
         <el-tab-pane label="日志" name="logs">
@@ -783,6 +817,17 @@ async function handleSaveEdit() {
 .timeline-pane {
   display: flex;
   flex-direction: column;
+  min-height: 0;
+}
+
+.history-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.history-table {
+  flex: 1 1 auto;
   min-height: 0;
 }
 

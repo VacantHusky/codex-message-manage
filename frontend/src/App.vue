@@ -6,6 +6,7 @@ import AppDialogs from './components/AppDialogs.vue'
 import { useThreadList } from './composables/useThreadList'
 import { useThreadDetail } from './composables/useThreadDetail'
 import { useThreadEvents } from './composables/useThreadEvents'
+import { useThreadHistory } from './composables/useThreadHistory'
 import { useSearch } from './composables/useSearch'
 import { useBackup } from './composables/useBackup'
 import { useStats } from './composables/useStats'
@@ -51,6 +52,16 @@ const {
   saveEvent,
   deleteEvent,
 } = useThreadEvents(selectedId)
+
+const {
+  historyItems,
+  historyTotal,
+  historyPage,
+  loadingHistory,
+  historyFilters,
+  loadHistory,
+  changeHistoryPage,
+} = useThreadHistory(selectedId)
 
 const {
   searchText,
@@ -129,7 +140,7 @@ async function openThread(row: ThreadSummary) {
   selectedId.value = row.id
   activeTab.value = 'timeline'
   await loadThreadDetail(row.id)
-  await loadEvents(true)
+  await Promise.all([loadEvents(true), loadHistory(true)])
 }
 
 async function handleSearchHit(hit: SearchHit) {
@@ -139,7 +150,7 @@ async function handleSearchHit(hit: SearchHit) {
   } else if (result.type === 'new' && result.threadId) {
     await loadThreadDetail(result.threadId)
     selectedId.value = result.threadId
-    await loadEvents(true)
+    await Promise.all([loadEvents(true), loadHistory(true)])
   }
 }
 
@@ -226,7 +237,7 @@ async function handleHistorySaved(item: HistoryEntry, text: string) {
   try {
     await apiPost(`/api/threads/${selectedId.value}/history/${item.ts}`, { text })
     ElMessage.success('历史记录已更新')
-    await loadThreadDetail(selectedId.value)
+    await loadHistory(false)
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error))
   }
@@ -242,7 +253,7 @@ async function handleDeleteHistory(item: HistoryEntry) {
     })
     await apiPost(`/api/threads/${selectedId.value}/history/${item.ts}/delete`, { confirm: true })
     ElMessage.success('历史记录已删除')
-    await loadThreadDetail(selectedId.value)
+    await loadHistory(false)
   } catch (error) {
     if (error instanceof Error) ElMessage.error(error.message)
   }
@@ -275,6 +286,11 @@ async function handleDeleteHistory(item: HistoryEntry) {
       :event-page="eventPage"
       :loading-events="loadingEvents"
       :event-filters="eventFilters"
+      :history-items="historyItems"
+      :history-total="historyTotal"
+      :history-page="historyPage"
+      :loading-history="loadingHistory"
+      :history-filters="historyFilters"
       :active-tab="activeTab"
       :expanded-events="expandedEvents"
       :search-text="searchText"
@@ -291,6 +307,8 @@ async function handleDeleteHistory(item: HistoryEntry) {
       @clear-logs="handleClearLogs"
       @load-events="loadEvents"
       @change-event-page="changeEventPage"
+      @load-history="loadHistory"
+      @change-history-page="changeHistoryPage"
       @event-saved="handleEventSaved"
       @history-saved="handleHistorySaved"
       @delete-history="handleDeleteHistory"

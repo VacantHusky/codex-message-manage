@@ -65,6 +65,13 @@ export interface HistoryEntry {
   text: string
 }
 
+export interface HistoryPage {
+  items: HistoryEntry[]
+  total_matched: number
+  offset: number
+  limit: number
+}
+
 export interface LogEntry {
   id: number
   ts_text: string

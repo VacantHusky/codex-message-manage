@@ -163,6 +163,19 @@ export function formatTimestamp(ts?: string): string {
   return `${y}-${m}-${d} ${hh}:${mm}`
 }
 
+export function formatDateTime(ts?: string): string {
+  if (!ts) return '-'
+  const date = new Date(ts)
+  if (Number.isNaN(date.getTime())) return ts
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  const hh = String(date.getHours()).padStart(2, '0')
+  const mm = String(date.getMinutes()).padStart(2, '0')
+  const ss = String(date.getSeconds()).padStart(2, '0')
+  return `${y}-${m}-${d} ${hh}:${mm}:${ss}`
+}
+
 export function eventSummary(event: SessionEvent): string {
   const text = event.display_text ?? ''
   if (!text) return '(空)'

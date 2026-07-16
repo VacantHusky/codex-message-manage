@@ -12,8 +12,8 @@ use axum::{
 };
 use models::{
     BackupRequest, BrowseRequest, ClearLogsRequest, DeleteEventRequest, DeleteHistoryRequest,
-    DeleteRequest, EventQuery, ExportQuery, ManagerConfig, RestoreRequest, SearchQuery,
-    ThreadQuery, UpdateArchiveRequest, UpdateDataDirRequest, UpdateEventRequest,
+    DeleteRequest, EventQuery, ExportQuery, HistoryQuery, ManagerConfig, RestoreRequest,
+    SearchQuery, ThreadQuery, UpdateArchiveRequest, UpdateDataDirRequest, UpdateEventRequest,
     UpdateHistoryRequest, UpdateRuntimeRequest, UpdateTitleRequest,
 };
 use serde_json::json;
@@ -45,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/backups/{id}/delete", post(delete_backup))
         .route("/threads", get(threads))
         .route("/threads/{id}", get(thread_detail))
+        .route("/threads/{id}/history", get(thread_history))
         .route("/threads/{id}/history/{ts}", post(update_history))
         .route("/threads/{id}/history/{ts}/delete", post(delete_history))
         .route("/threads/{id}/events", get(thread_events))
@@ -155,6 +156,20 @@ async fn threads(State(store): State<Arc<AppStore>>, Query(query): Query<ThreadQ
 async fn thread_detail(State(store): State<Arc<AppStore>>, Path(id): Path<String>) -> Response {
     match store.thread_detail(&id).await {
         Ok(detail) => match serde_json::to_value(detail) {
+            Ok(value) => axum::Json(value).into_response(),
+            Err(e) => json_error_response(e),
+        },
+        Err(e) => store_error_response(e),
+    }
+}
+
+async fn thread_history(
+    State(store): State<Arc<AppStore>>,
+    Path(id): Path<String>,
+    Query(query): Query<HistoryQuery>,
+) -> Response {
+    match store.thread_history_page(&id, query) {
+        Ok(history) => match serde_json::to_value(history) {
             Ok(value) => axum::Json(value).into_response(),
             Err(e) => json_error_response(e),
         },

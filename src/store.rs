@@ -495,6 +495,63 @@ impl AppStore {
         })
     }
 
+    pub fn thread_history_page(
+        &self,
+        id: &str,
+        query: HistoryQuery,
+    ) -> Result<HistoryPage, StoreError> {
+        let offset = query.offset.unwrap_or(0);
+        let limit = query.limit.unwrap_or(20).clamp(1, 200);
+        let history_path = self.history_path.read().unwrap();
+        if !history_path.exists() {
+            return Ok(HistoryPage {
+                items: Vec::new(),
+                total_matched: 0,
+                offset,
+                limit,
+            });
+        }
+
+        let file = fs::File::open(&*history_path)?;
+        let mut items = Vec::new();
+        let mut total_matched = 0;
+        for line in BufReader::new(file).lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let value: Value = serde_json::from_str(&line)?;
+            let session_id = value
+                .get("session_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if session_id != id {
+                continue;
+            }
+            if total_matched >= offset && items.len() < limit {
+                let ts = value.get("ts").and_then(Value::as_i64).unwrap_or_default();
+                items.push(HistoryEntry {
+                    session_id: session_id.to_string(),
+                    ts,
+                    ts_text: timestamp_to_text(ts),
+                    text: value
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                });
+            }
+            total_matched += 1;
+        }
+
+        Ok(HistoryPage {
+            items,
+            total_matched,
+            offset,
+            limit,
+        })
+    }
+
     pub async fn search(&self, query: SearchQuery) -> Result<SearchResponse, StoreError> {
         let q = normalize_query(Some(&query.q))
             .ok_or_else(|| StoreError::BadRequest("q is required".to_string()))?;
