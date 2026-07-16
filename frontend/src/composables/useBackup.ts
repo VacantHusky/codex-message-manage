@@ -8,10 +8,14 @@ export function useBackup() {
   const restoring = ref('')
   const deleting = ref('')
 
-  async function openBackups() {
-    backupDialog.value = true
+  async function loadBackups() {
     const data = await apiGet<BackupList>('/api/backups')
     backups.value = data.items
+  }
+
+  async function openBackups() {
+    backupDialog.value = true
+    await loadBackups()
   }
 
   async function restoreBackup(item: BackupInfo) {
@@ -66,6 +70,7 @@ export function useBackup() {
     restoring,
     deleting,
     openBackups,
+    loadBackups,
     restoreBackup,
     deleteBackup,
   }

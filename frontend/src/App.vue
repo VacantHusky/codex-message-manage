@@ -73,6 +73,7 @@ const {
   restoring,
   deleting: backupDeleting,
   openBackups,
+  loadBackups,
   restoreBackup,
   deleteBackup,
 } = useBackup()
@@ -181,14 +182,14 @@ async function handleConfirmDelete() {
 async function handleRestoreBackup(item: BackupInfo) {
   const success = await restoreBackup(item)
   if (success) {
-    await Promise.all([loadOverview(), loadThreads(), openBackups()])
+    await Promise.all([loadOverview(), loadThreads(), loadBackups()])
   }
 }
 
 async function handleDeleteBackup(item: BackupInfo) {
   const success = await deleteBackup(item)
   if (success) {
-    await openBackups()
+    await loadBackups()
   }
 }
 
@@ -265,10 +266,16 @@ async function handleDeleteHistory(item: HistoryEntry) {
       :total="total"
       :filters="filters"
       :selected-id="selectedId"
+      :backups="backups"
+      :restoring="restoring"
+      :backup-deleting="backupDeleting"
       @select-thread="openThread"
       @reload="reloadAll"
       @open-stats="openStats"
       @open-backups="openBackups"
+      @load-backups="loadBackups"
+      @restore-backup="handleRestoreBackup"
+      @delete-backup="handleDeleteBackup"
       @open-change-data-dir="openChangeDataDir"
       @load-threads="loadThreads"
     />
