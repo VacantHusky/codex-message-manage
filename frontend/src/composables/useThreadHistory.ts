@@ -1,4 +1,4 @@
-import { reactive, ref } from 'vue'
+import { reactive, ref, watch } from 'vue'
 import { apiGet, type HistoryEntry, type HistoryPage } from '../api'
 import { ElMessage } from 'element-plus'
 
@@ -9,8 +9,13 @@ export function useThreadHistory(selectedId: ReturnType<typeof ref<string>>) {
   const loadingHistory = ref(false)
 
   const historyFilters = reactive({
-    limit: 20,
+    limit: storedHistoryPageSize(),
   })
+
+  watch(
+    () => historyFilters.limit,
+    (limit) => window.localStorage.setItem(HISTORY_PAGE_SIZE_KEY, String(limit)),
+  )
 
   async function loadHistory(reset = false) {
     if (!selectedId.value) return
@@ -54,4 +59,12 @@ export function useThreadHistory(selectedId: ReturnType<typeof ref<string>>) {
     loadHistory,
     changeHistoryPage,
   }
+}
+
+const HISTORY_PAGE_SIZE_KEY = 'codex-message-manage:history-page-size'
+const HISTORY_PAGE_SIZES = [10, 20, 50, 100]
+
+function storedHistoryPageSize() {
+  const value = Number(window.localStorage.getItem(HISTORY_PAGE_SIZE_KEY))
+  return HISTORY_PAGE_SIZES.includes(value) ? value : 20
 }

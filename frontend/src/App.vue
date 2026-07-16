@@ -70,6 +70,7 @@ const {
 const {
   backups,
   backupDialog,
+  loading: loadingBackups,
   restoring,
   deleting: backupDeleting,
   openBackups,
@@ -267,9 +268,11 @@ async function handleDeleteHistory(item: HistoryEntry) {
       :filters="filters"
       :selected-id="selectedId"
       :backups="backups"
+      :loading-backups="loadingBackups"
       :restoring="restoring"
       :backup-deleting="backupDeleting"
       @select-thread="openThread"
+      @search-hit="handleSearchHit"
       @reload="reloadAll"
       @open-stats="openStats"
       @open-backups="openBackups"

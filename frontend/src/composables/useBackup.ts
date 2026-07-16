@@ -5,12 +5,22 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 export function useBackup() {
   const backups = ref<BackupInfo[]>([])
   const backupDialog = ref(false)
+  const loading = ref(false)
   const restoring = ref('')
   const deleting = ref('')
 
   async function loadBackups() {
-    const data = await apiGet<BackupList>('/api/backups')
-    backups.value = data.items
+    loading.value = true
+    try {
+      const data = await apiGet<BackupList>('/api/backups')
+      backups.value = data.items
+      return true
+    } catch (error) {
+      ElMessage.error(error instanceof Error ? error.message : String(error))
+      return false
+    } finally {
+      loading.value = false
+    }
   }
 
   async function openBackups() {
@@ -67,6 +77,7 @@ export function useBackup() {
   return {
     backups,
     backupDialog,
+    loading,
     restoring,
     deleting,
     openBackups,

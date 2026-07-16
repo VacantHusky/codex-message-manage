@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
@@ -270,7 +270,7 @@ impl AppStore {
                 }
             })
             .collect();
-        largest_sessions.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+        largest_sessions.sort_by_key(|item| std::cmp::Reverse(item.bytes));
 
         let mut event_type_counts: HashMap<String, usize> = HashMap::new();
         let mut payload_type_counts: HashMap<String, usize> = HashMap::new();
@@ -555,6 +555,7 @@ impl AppStore {
     pub async fn search(&self, query: SearchQuery) -> Result<SearchResponse, StoreError> {
         let q = normalize_query(Some(&query.q))
             .ok_or_else(|| StoreError::BadRequest("q is required".to_string()))?;
+        let offset = query.offset.unwrap_or(0);
         let limit = query.limit.unwrap_or(80).clamp(1, 300);
         let mut threads = self.load_threads().await?;
         if let Some(thread_id) = query.thread_id.as_deref() {
@@ -569,6 +570,8 @@ impl AppStore {
         }
 
         let mut items = Vec::new();
+        let mut total = 0usize;
+        let mut matched_threads = HashSet::new();
         for thread in &threads {
             for (field, text) in [
                 ("title", thread.title.as_str()),
@@ -577,18 +580,22 @@ impl AppStore {
                 ("preview", thread.preview.as_str()),
             ] {
                 if contains_ci(text, &q) {
-                    items.push(SearchHit {
-                        thread_id: thread.id.clone(),
-                        title: Some(thread.title.clone()),
-                        cwd: Some(thread.cwd.clone()),
-                        source: "threads".to_string(),
-                        field: field.to_string(),
-                        timestamp: Some(thread.updated_at_text.clone()),
-                        snippet: snippet(text, &q),
-                    });
-                    if items.len() >= limit {
-                        return Ok(SearchResponse { q, items, limit });
-                    }
+                    record_search_hit(
+                        SearchHit {
+                            thread_id: thread.id.clone(),
+                            title: Some(thread.title.clone()),
+                            cwd: Some(thread.cwd.clone()),
+                            source: "threads".to_string(),
+                            field: field.to_string(),
+                            timestamp: Some(thread.updated_at_text.clone()),
+                            snippet: snippet(text, &q),
+                        },
+                        offset,
+                        limit,
+                        &mut total,
+                        &mut matched_threads,
+                        &mut items,
+                    );
                 }
             }
         }
@@ -599,18 +606,22 @@ impl AppStore {
             }
             if contains_ci(&entry.text, &q) {
                 let thread = by_id.get(&entry.session_id);
-                items.push(SearchHit {
-                    thread_id: entry.session_id.clone(),
-                    title: thread.map(|t| t.title.clone()),
-                    cwd: thread.map(|t| t.cwd.clone()),
-                    source: "history".to_string(),
-                    field: "text".to_string(),
-                    timestamp: Some(entry.ts_text),
-                    snippet: snippet(&entry.text, &q),
-                });
-                if items.len() >= limit {
-                    return Ok(SearchResponse { q, items, limit });
-                }
+                record_search_hit(
+                    SearchHit {
+                        thread_id: entry.session_id.clone(),
+                        title: thread.map(|t| t.title.clone()),
+                        cwd: thread.map(|t| t.cwd.clone()),
+                        source: "history".to_string(),
+                        field: "text".to_string(),
+                        timestamp: Some(entry.ts_text),
+                        snippet: snippet(&entry.text, &q),
+                    },
+                    offset,
+                    limit,
+                    &mut total,
+                    &mut matched_threads,
+                    &mut items,
+                );
             }
         }
 
@@ -618,37 +629,44 @@ impl AppStore {
             let Some(path) = thread.resolved_rollout_path.as_deref() else {
                 continue;
             };
-            let mut reached_limit = false;
             for_each_jsonl_value(Path::new(path), |index, raw| {
                 let event = event_from_value(index, raw)?;
                 let Some(text) = event.display_text.as_deref() else {
                     return Ok(());
                 };
                 if contains_ci(text, &q) {
-                    items.push(SearchHit {
-                        thread_id: thread.id.clone(),
-                        title: Some(thread.title.clone()),
-                        cwd: Some(thread.cwd.clone()),
-                        source: "events".to_string(),
-                        field: event
-                            .payload_type
-                            .clone()
-                            .unwrap_or_else(|| event.event_type.clone()),
-                        timestamp: Some(event.timestamp),
-                        snippet: snippet(text, &q),
-                    });
-                    if items.len() >= limit {
-                        reached_limit = true;
-                    }
+                    record_search_hit(
+                        SearchHit {
+                            thread_id: thread.id.clone(),
+                            title: Some(thread.title.clone()),
+                            cwd: Some(thread.cwd.clone()),
+                            source: "events".to_string(),
+                            field: event
+                                .payload_type
+                                .clone()
+                                .unwrap_or_else(|| event.event_type.clone()),
+                            timestamp: Some(event.timestamp),
+                            snippet: snippet(text, &q),
+                        },
+                        offset,
+                        limit,
+                        &mut total,
+                        &mut matched_threads,
+                        &mut items,
+                    );
                 }
                 Ok(())
             })?;
-            if reached_limit {
-                return Ok(SearchResponse { q, items, limit });
-            }
         }
 
-        Ok(SearchResponse { q, items, limit })
+        Ok(SearchResponse {
+            q,
+            items,
+            total,
+            thread_count: matched_threads.len(),
+            offset,
+            limit,
+        })
     }
 
     pub async fn export_thread(
@@ -1063,11 +1081,11 @@ impl AppStore {
             // 全部成功，删除备份
             let backup_dir = PathBuf::from(&manifest.path);
             if backup_dir.exists() {
-                let _ = fs::remove_dir_all(&backup_dir);
+                fs::remove_dir_all(&backup_dir)?;
             }
             let mut metadata = self.load_metadata()?;
             metadata.backups.retain(|b| b.id != backup_id);
-            let _ = self.save_metadata(&metadata);
+            self.save_metadata(&metadata)?;
             Ok(ThreadWriteResult {
                 ok: true,
                 thread_id: manifest.thread_id,
@@ -1081,24 +1099,12 @@ impl AppStore {
                 locked_files.join("\n")
             )))
         } else {
-            // 部分成功
-            let backup_dir = PathBuf::from(&manifest.path);
-            if backup_dir.exists() {
-                let _ = fs::remove_dir_all(&backup_dir);
-            }
-            let mut metadata = self.load_metadata()?;
-            metadata.backups.retain(|b| b.id != backup_id);
-            let _ = self.save_metadata(&metadata);
-            Ok(ThreadWriteResult {
-                ok: true,
-                thread_id: manifest.thread_id,
-                message: format!(
-                    "已恢复 {} 个文件，{} 个文件被锁定（重启 Codex 后生效）",
-                    restored_files.len(),
-                    locked_files.len()
-                ),
-                backup_dir: None,
-            })
+            Err(StoreError::BadRequest(format!(
+                "已恢复 {} 个文件，但以下 {} 个文件恢复失败；备份已保留，可排除占用后重试：\n{}",
+                restored_files.len(),
+                locked_files.len(),
+                locked_files.join("\n")
+            )))
         }
     }
 
@@ -1200,25 +1206,25 @@ impl AppStore {
             }
         }
 
-        if current.is_dir() {
-            if let Ok(entries) = fs::read_dir(&current) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        let name = path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        directories.push(BrowseItem {
-                            name,
-                            path: path.display().to_string(),
-                        });
-                    }
+        if current.is_dir()
+            && let Ok(entries) = fs::read_dir(&current)
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    directories.push(BrowseItem {
+                        name,
+                        path: path.display().to_string(),
+                    });
                 }
             }
         }
 
-        directories.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        directories.sort_by_key(|item| item.name.to_lowercase());
 
         Ok(BrowseResponse {
             current: current.display().to_string(),
@@ -2269,6 +2275,21 @@ fn contains_ci(haystack: &str, q: &str) -> bool {
     haystack.to_lowercase().contains(q)
 }
 
+fn record_search_hit(
+    hit: SearchHit,
+    offset: usize,
+    limit: usize,
+    total: &mut usize,
+    matched_threads: &mut HashSet<String>,
+    items: &mut Vec<SearchHit>,
+) {
+    matched_threads.insert(hit.thread_id.clone());
+    if *total >= offset && items.len() < limit {
+        items.push(hit);
+    }
+    *total += 1;
+}
+
 fn snippet(text: &str, q: &str) -> String {
     let lower = text.to_lowercase();
     let Some(pos) = lower.find(q) else {
@@ -2490,6 +2511,37 @@ mod tests {
     fn creates_snippet_around_match() {
         let text = "0123456789abcdefghijklmnopqrstuvwxyz";
         assert!(snippet(text, "mnop").contains("mnop"));
+    }
+
+    #[test]
+    fn paginates_search_hits_and_counts_distinct_threads() {
+        let mut items = Vec::new();
+        let mut total = 0;
+        let mut matched_threads = HashSet::new();
+        for thread_id in ["thread-a", "thread-a", "thread-b", "thread-a"] {
+            record_search_hit(
+                SearchHit {
+                    thread_id: thread_id.to_string(),
+                    title: None,
+                    cwd: None,
+                    source: "events".to_string(),
+                    field: "message".to_string(),
+                    timestamp: None,
+                    snippet: format!("hit-{total}"),
+                },
+                1,
+                2,
+                &mut total,
+                &mut matched_threads,
+                &mut items,
+            );
+        }
+
+        assert_eq!(total, 4);
+        assert_eq!(matched_threads.len(), 2);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].snippet, "hit-1");
+        assert_eq!(items[1].snippet, "hit-2");
     }
 
     #[test]

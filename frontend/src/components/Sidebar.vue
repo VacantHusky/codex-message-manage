@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import {
   CaretBottom,
   CaretRight,
@@ -19,7 +20,7 @@ import {
   formatTimestamp,
   runtimeLabel,
 } from '../utils/format'
-import { apiGet, type BackupInfo, type Overview, type ThreadPage, type ThreadSummary } from '../api'
+import { apiGet, type BackupInfo, type Overview, type SearchHit, type SearchResponse, type ThreadSummary } from '../api'
 
 type SidebarPanel = 'sessions' | 'search' | 'backup' | 'info' | 'settings'
 
@@ -39,12 +40,14 @@ const props = defineProps<{
   }
   selectedId: string
   backups: BackupInfo[]
+  loadingBackups: boolean
   restoring: string
   backupDeleting: string
 }>()
 
 const emit = defineEmits<{
   (e: 'select-thread', thread: ThreadSummary): void
+  (e: 'search-hit', hit: SearchHit): void
   (e: 'reload'): void
   (e: 'open-stats'): void
   (e: 'open-backups'): void
@@ -61,13 +64,15 @@ const replaceExpanded = ref(false)
 const searchText = ref('')
 const replaceText = ref('')
 const searchHasQuery = computed(() => searchText.value.trim().length > 0)
-const searchThreads = ref<ThreadSummary[]>([])
+const searchResults = ref<SearchHit[]>([])
 const searchTotal = ref(0)
+const searchThreadCount = ref(0)
 const searchPage = ref(1)
 const searchPageSize = 30
 const loadingSearch = ref(false)
-const searchResultLabel = computed(() => `${formatCount(searchTotal.value)} 个结果，包含于 ${formatCount(searchTotal.value)} 个会话中`)
+const searchResultLabel = computed(() => `${formatCount(searchTotal.value)} 个结果，包含于 ${formatCount(searchThreadCount.value)} 个会话中`)
 let searchTimer: ReturnType<typeof window.setTimeout> | undefined
+let searchRequestId = 0
 
 const panelTitle = computed(() => {
   const titles: Record<SidebarPanel, string> = {
@@ -92,22 +97,31 @@ function handleFilterChange() {
 async function loadSearchResults(reset = false) {
   const q = searchText.value.trim()
   if (reset) searchPage.value = 1
+  const requestId = ++searchRequestId
   if (!q) {
-    searchThreads.value = []
+    searchResults.value = []
     searchTotal.value = 0
+    searchThreadCount.value = 0
+    loadingSearch.value = false
     return
   }
   loadingSearch.value = true
   try {
-    const data = await apiGet<ThreadPage>('/api/threads', {
+    const data = await apiGet<SearchResponse>('/api/search', {
       q,
-      page: searchPage.value,
-      page_size: searchPageSize,
+      offset: (searchPage.value - 1) * searchPageSize,
+      limit: searchPageSize,
     })
-    searchThreads.value = data.items
+    if (requestId !== searchRequestId) return
+    searchResults.value = data.items
     searchTotal.value = data.total
+    searchThreadCount.value = data.thread_count
+  } catch (error) {
+    if (requestId === searchRequestId) {
+      ElMessage.error(error instanceof Error ? error.message : String(error))
+    }
   } finally {
-    loadingSearch.value = false
+    if (requestId === searchRequestId) loadingSearch.value = false
   }
 }
 
@@ -140,6 +154,11 @@ watch(activePanel, (panel) => {
   if (panel === 'backup') {
     emit('load-backups')
   }
+})
+
+onUnmounted(() => {
+  if (searchTimer) window.clearTimeout(searchTimer)
+  searchRequestId += 1
 })
 </script>
 
@@ -244,7 +263,7 @@ watch(activePanel, (panel) => {
         </el-button>
       </section>
 
-      <section v-else-if="activePanel === 'backup'" class="backup-panel">
+      <section v-else-if="activePanel === 'backup'" v-loading="loadingBackups" class="backup-panel">
         <el-table v-if="backups.length" :data="backups" height="100%" class="backup-table">
           <el-table-column label="备份">
             <template #default="{ row }">
@@ -382,16 +401,16 @@ watch(activePanel, (panel) => {
         </section>
 
         <el-table
-          v-if="activePanel === 'sessions' || searchHasQuery"
+          v-if="activePanel === 'sessions'"
           class="thread-table"
-          v-loading="activePanel === 'search' ? loadingSearch : loadingThreads"
-          :data="activePanel === 'search' ? searchThreads : threads"
+          v-loading="loadingThreads"
+          :data="threads"
           height="100%"
           highlight-current-row
           :row-class-name="rowClassName"
           @row-click="(row: ThreadSummary) => emit('select-thread', row)"
         >
-          <el-table-column :label="activePanel === 'search' ? searchResultLabel : '会话'">
+          <el-table-column label="会话">
             <template #default="{ row }">
               <div class="thread-title truncate" :title="fullTitle(row)">
                 {{ compactTitle(row) }}
@@ -423,28 +442,53 @@ watch(activePanel, (panel) => {
             </template>
           </el-table-column>
         </el-table>
-        <el-empty
-          v-else
-          class="search-empty"
-          description="输入关键词后显示搜索结果"
-        />
         <el-pagination
-          v-if="activePanel === 'sessions' || searchHasQuery"
+          v-if="activePanel === 'sessions'"
           class="pager"
           layout="prev, pager, next"
-          :page-size="activePanel === 'search' ? searchPageSize : filters.page_size"
-          :total="activePanel === 'search' ? searchTotal : total"
-          :current-page="activePanel === 'search' ? searchPage : filters.page"
+          :page-size="filters.page_size"
+          :total="total"
+          :current-page="filters.page"
           @current-change="(page: number) => {
-            if (activePanel === 'search') {
-              searchPage = page
-              loadSearchResults(false)
-            } else {
-              filters.page = page
-              emit('load-threads')
-            }
+            filters.page = page
+            emit('load-threads')
           }"
         />
+        <template v-else-if="searchHasQuery">
+          <el-table
+            class="thread-table"
+            v-loading="loadingSearch"
+            :data="searchResults"
+            height="100%"
+            @row-click="(row: SearchHit) => emit('search-hit', row)"
+          >
+            <el-table-column :label="searchResultLabel">
+              <template #default="{ row }">
+                <div class="thread-title truncate" :title="row.title || row.thread_id">
+                  {{ row.title || row.thread_id }}
+                </div>
+                <div class="thread-meta truncate" :title="row.cwd">{{ row.cwd || '-' }}</div>
+                <div class="search-snippet prewrap">{{ row.snippet }}</div>
+                <div class="thread-tags">
+                  <el-tag size="small" effect="plain">{{ row.source }}</el-tag>
+                  <el-tag size="small" effect="plain" type="info">{{ row.field }}</el-tag>
+                  <span v-if="row.timestamp" class="thread-meta" :title="row.timestamp">
+                    {{ formatTimestamp(row.timestamp) }}
+                  </span>
+                </div>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-pagination
+            class="pager"
+            layout="prev, pager, next"
+            :page-size="searchPageSize"
+            :total="searchTotal"
+            :current-page="searchPage"
+            @current-change="(page: number) => { searchPage = page; loadSearchResults(false) }"
+          />
+        </template>
+        <el-empty v-else class="search-empty" description="输入关键词后显示搜索结果" />
       </template>
     </section>
   </aside>

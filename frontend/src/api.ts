@@ -138,6 +138,9 @@ export interface SearchHit {
 export interface SearchResponse {
   q: string
   items: SearchHit[]
+  total: number
+  thread_count: number
+  offset: number
   limit: number
 }
 

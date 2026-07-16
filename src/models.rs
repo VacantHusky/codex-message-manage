@@ -39,6 +39,7 @@ pub struct HistoryQuery {
 pub struct SearchQuery {
     pub q: String,
     pub thread_id: Option<String>,
+    pub offset: Option<usize>,
     pub limit: Option<usize>,
 }
 
@@ -330,6 +331,9 @@ pub struct SessionEvent {
 pub struct SearchResponse {
     pub q: String,
     pub items: Vec<SearchHit>,
+    pub total: usize,
+    pub thread_count: usize,
+    pub offset: usize,
     pub limit: usize,
 }
 
