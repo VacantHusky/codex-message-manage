@@ -14,9 +14,9 @@
 
 ### 环境要求
 
-- Rust 1.70+
-- Node.js 18+
-- npm 或 yarn
+- Rust 1.85+（项目使用 Rust 2024 edition）
+- Node.js 20.19+ 或 22.12+
+- npm
 
 ### 启动项目
 
@@ -86,7 +86,7 @@ curl -X POST http://127.0.0.1:5178/api/config/data-dir \
   -d '{"data_dir": "/path/to/your/codex/data"}'
 ```
 
-**注意**：通过 API 更新后需要重启应用才能生效。
+通过 API 更新后立即生效，并持久化到配置文件。
 
 ## 生产构建
 

@@ -4,7 +4,7 @@ use std::{
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
     str::FromStr,
-    sync::RwLock,
+    sync::{Mutex, RwLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -65,8 +65,12 @@ fn atomic_replace_file(source: &Path, target: &Path) -> Result<(), std::io::Erro
 }
 
 fn restore_temp_path(target: &Path) -> PathBuf {
+    sibling_path(target, ".restore_swap")
+}
+
+fn sibling_path(target: &Path, suffix: &str) -> PathBuf {
     let mut value = target.as_os_str().to_os_string();
-    value.push(".restore_swap");
+    value.push(suffix);
     PathBuf::from(value)
 }
 
@@ -152,6 +156,7 @@ pub struct AppStore {
     history_path: RwLock<PathBuf>,
     trash_dir: PathBuf,
     metadata_path: PathBuf,
+    metadata_lock: Mutex<()>,
 }
 
 impl AppStore {
@@ -174,6 +179,7 @@ impl AppStore {
             config,
             trash_dir,
             metadata_path,
+            metadata_lock: Mutex::new(()),
             data_dir: RwLock::new(data_dir),
         })
     }
@@ -1072,10 +1078,10 @@ impl AppStore {
                 serde_json::to_string_pretty(&manifest)?,
             )?;
 
-            let mut metadata = self.load_metadata()?;
-            metadata.backups.retain(|item| item.id != backup_id);
-            metadata.backups.push(manifest);
-            self.save_metadata(&metadata)?;
+            self.update_metadata(|metadata| {
+                metadata.backups.retain(|item| item.id != backup_id);
+                metadata.backups.push(manifest);
+            })?;
 
             Ok(ThreadWriteResult {
                 ok: true,
@@ -1127,9 +1133,9 @@ impl AppStore {
             if backup_dir.exists() {
                 fs::remove_dir_all(&backup_dir)?;
             }
-            let mut metadata = self.load_metadata()?;
-            metadata.backups.retain(|b| b.id != backup_id);
-            self.save_metadata(&metadata)?;
+            self.update_metadata(|metadata| {
+                metadata.backups.retain(|backup| backup.id != backup_id);
+            })?;
             Ok(ThreadWriteResult {
                 ok: true,
                 thread_id: manifest.thread_id,
@@ -1158,9 +1164,9 @@ impl AppStore {
         if backup_dir.exists() {
             fs::remove_dir_all(&backup_dir)?;
         }
-        let mut metadata = self.load_metadata()?;
-        metadata.backups.retain(|b| b.id != backup_id);
-        self.save_metadata(&metadata)?;
+        self.update_metadata(|metadata| {
+            metadata.backups.retain(|backup| backup.id != backup_id);
+        })?;
         Ok(ThreadWriteResult {
             ok: true,
             thread_id: manifest.thread_id,
@@ -1282,14 +1288,14 @@ impl AppStore {
         id: &str,
         request: UpdateTitleRequest,
     ) -> Result<ThreadWriteResult, StoreError> {
-        let mut metadata = self.load_metadata()?;
         let title = request.title.trim().to_string();
-        if title.is_empty() {
-            metadata.thread_titles.remove(id);
-        } else {
-            metadata.thread_titles.insert(id.to_string(), title);
-        }
-        self.save_metadata(&metadata)?;
+        self.update_metadata(|metadata| {
+            if title.is_empty() {
+                metadata.thread_titles.remove(id);
+            } else {
+                metadata.thread_titles.insert(id.to_string(), title);
+            }
+        })?;
         Ok(ThreadWriteResult {
             ok: true,
             thread_id: id.to_string(),
@@ -1454,8 +1460,27 @@ impl AppStore {
         if let Some(parent) = self.metadata_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(&self.metadata_path, serde_json::to_string_pretty(metadata)?)?;
+        let temp_path = sibling_path(&self.metadata_path, ".write_tmp");
+        fs::write(&temp_path, serde_json::to_string_pretty(metadata)?)?;
+        if let Err(error) = atomic_replace_file(&temp_path, &self.metadata_path) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(error.into());
+        }
+        let _ = fs::remove_file(temp_path);
         Ok(())
+    }
+
+    fn update_metadata<F>(&self, update: F) -> Result<(), StoreError>
+    where
+        F: FnOnce(&mut ManagerMetadata),
+    {
+        let _guard = self
+            .metadata_lock
+            .lock()
+            .map_err(|_| StoreError::Other("metadata lock is poisoned".to_string()))?;
+        let mut metadata = self.load_metadata()?;
+        update(&mut metadata);
+        self.save_metadata(&metadata)
     }
 
     fn backup_manifest(&self, backup_id: &str) -> Result<BackupManifest, StoreError> {
@@ -2522,6 +2547,7 @@ fn date_to_ms(value: &str, start: bool) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     struct TestStore {
         _dir: tempfile::TempDir,
@@ -2910,6 +2936,50 @@ mod tests {
         assert!(error.to_string().contains("备份已保留"));
         assert_eq!(fixture.store.list_backups().unwrap().items.len(), 1);
         assert!(Path::new(&manifest.path).exists());
+    }
+
+    #[test]
+    fn concurrent_metadata_updates_do_not_lose_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ManagerConfig {
+            data_dir: dir.path().display().to_string(),
+            bind: "127.0.0.1:0".to_string(),
+            trash_dir: dir.path().join("trash").display().to_string(),
+            metadata_path: dir.path().join("metadata.json").display().to_string(),
+        };
+        let store =
+            Arc::new(AppStore::with_config(dir.path().join("config.toml"), config).unwrap());
+        let handles: Vec<_> = (0..24)
+            .map(|index| {
+                let store = Arc::clone(&store);
+                std::thread::spawn(move || {
+                    store
+                        .update_title(
+                            &format!("thread-{index}"),
+                            UpdateTitleRequest {
+                                title: format!("Title {index}"),
+                            },
+                        )
+                        .unwrap();
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let metadata = store.load_metadata().unwrap();
+        assert_eq!(metadata.thread_titles.len(), 24);
+        for index in 0..24 {
+            let expected = format!("Title {index}");
+            assert_eq!(
+                metadata
+                    .thread_titles
+                    .get(&format!("thread-{index}"))
+                    .map(String::as_str),
+                Some(expected.as_str())
+            );
+        }
     }
 
     #[test]
