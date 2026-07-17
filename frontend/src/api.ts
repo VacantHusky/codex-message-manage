@@ -133,6 +133,9 @@ export interface SearchHit {
   field: string
   timestamp?: string
   snippet: string
+  replaceable: boolean
+  event_index?: number
+  history_ts?: number
 }
 
 export interface SearchResponse {
@@ -142,6 +145,14 @@ export interface SearchResponse {
   thread_count: number
   offset: number
   limit: number
+}
+
+export interface ReplaceSearchResponse {
+  ok: boolean
+  replaced_items: number
+  replaced_matches: number
+  thread_count: number
+  backup_id: string
 }
 
 export interface DeletePreview {

@@ -201,11 +201,23 @@ async function handleDeleteBackup(item: BackupInfo) {
   }
 }
 
+async function handleSearchReplaced() {
+  await Promise.all([loadOverview(), loadThreads(), loadBackups()])
+  if (selectedId.value) {
+    await Promise.all([
+      loadThreadDetail(selectedId.value),
+      loadEvents(true),
+      loadHistory(true),
+    ])
+  }
+}
+
 async function handleArchive(archived: boolean) {
   const success = await archiveSelected(archived)
   if (success && selectedId.value) {
     await Promise.all([loadThreadDetail(selectedId.value), loadThreads()])
   }
+  return !!success
 }
 
 async function handleRuntimeSaved(request: Parameters<typeof updateRuntime>[0]) {
@@ -280,6 +292,7 @@ async function handleDeleteHistory(item: HistoryEntry) {
       :backup-deleting="backupDeleting"
       @select-thread="openThread"
       @search-hit="handleSearchHit"
+      @search-replaced="handleSearchReplaced"
       @reload="reloadAll"
       @open-stats="openStats"
       @load-backups="loadBackups"
@@ -312,8 +325,8 @@ async function handleDeleteHistory(item: HistoryEntry) {
       :save-event="saveEvent"
       :save-title="handleTitleSaved"
       :save-runtime="handleRuntimeSaved"
+      :save-archive="handleArchive"
       @backup="handleBackupSelected"
-      @archive="handleArchive"
       @delete="handlePreviewDelete"
       @clear-logs="handleClearLogs"
       @load-events="loadEvents"

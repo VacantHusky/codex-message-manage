@@ -41,12 +41,14 @@ const emit = defineEmits<{
     </el-table-column>
     <el-table-column label="操作" width="150" align="right">
       <template #default="{ row }">
-        <el-button size="small" text :icon="EditPen" @click="emit('edit-history', row)">
-          编辑
-        </el-button>
-        <el-button size="small" text type="danger" :icon="Delete" @click="emit('delete-history', row)">
-          删除
-        </el-button>
+        <div class="history-actions">
+          <el-button size="small" text :icon="EditPen" @click="emit('edit-history', row)">
+            编辑
+          </el-button>
+          <el-button size="small" text type="danger" :icon="Delete" @click="emit('delete-history', row)">
+            删除
+          </el-button>
+        </div>
       </template>
     </el-table-column>
   </el-table>
@@ -70,6 +72,14 @@ const emit = defineEmits<{
 .history-table {
   flex: 1 1 auto;
   min-height: 0;
+}
+
+.history-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 
 .load-more {

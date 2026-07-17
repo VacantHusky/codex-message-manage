@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Search } from '@element-plus/icons-vue'
 import type { SearchHit, ThreadSummary } from '../../api'
+import { searchFieldName, searchSourceName } from '../../utils/format'
 
 defineProps<{
   selectedThread?: ThreadSummary
@@ -38,7 +39,7 @@ const emit = defineEmits<{
       @click="emit('search-hit', hit)"
     >
       <strong>{{ hit.title || hit.thread_id }}</strong>
-      <span class="muted">{{ hit.source }} · {{ hit.field }} · {{ hit.timestamp || '-' }}</span>
+      <span class="muted">{{ searchSourceName(hit.source) }} · {{ searchFieldName(hit.field) }} · {{ hit.timestamp || '-' }}</span>
       <span class="prewrap">{{ hit.snippet }}</span>
     </button>
   </section>

@@ -3,6 +3,7 @@ import type { UpdateRuntimeRequest } from '../../api'
 
 defineProps<{
   titleText: string
+  archived: boolean
   runtimeForm: UpdateRuntimeRequest
   savingRuntime: boolean
 }>()
@@ -11,6 +12,7 @@ const visible = defineModel<boolean>('visible', { required: true })
 
 const emit = defineEmits<{
   (e: 'update:titleText', value: string): void
+  (e: 'update:archived', value: boolean): void
   (e: 'save'): void
 }>()
 </script>
@@ -29,6 +31,14 @@ const emit = defineEmits<{
           clearable
           placeholder="留空表示恢复原始标题"
           @update:model-value="(value: string) => emit('update:titleText', value)"
+        />
+      </el-form-item>
+      <el-form-item label="归档">
+        <el-switch
+          :model-value="archived"
+          active-text="已归档"
+          inactive-text="未归档"
+          @update:model-value="(value: boolean) => emit('update:archived', value)"
         />
       </el-form-item>
       <el-form-item label="模型来源">

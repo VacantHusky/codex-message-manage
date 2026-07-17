@@ -12,9 +12,9 @@ use axum::{
 };
 use models::{
     BackupRequest, BrowseRequest, ClearLogsRequest, DeleteEventRequest, DeleteHistoryRequest,
-    DeleteRequest, EventQuery, ExportQuery, HistoryQuery, ManagerConfig, RestoreRequest,
-    SearchQuery, ThreadQuery, UpdateArchiveRequest, UpdateDataDirRequest, UpdateEventRequest,
-    UpdateHistoryRequest, UpdateRuntimeRequest, UpdateTitleRequest,
+    DeleteRequest, EventQuery, ExportQuery, HistoryQuery, ManagerConfig, ReplaceSearchRequest,
+    RestoreRequest, SearchQuery, ThreadQuery, UpdateArchiveRequest, UpdateDataDirRequest,
+    UpdateEventRequest, UpdateHistoryRequest, UpdateRuntimeRequest, UpdateTitleRequest,
 };
 use serde_json::json;
 use store::{AppStore, StoreError};
@@ -60,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/threads/{id}/delete/preview", post(delete_preview))
         .route("/threads/{id}/delete", post(delete_thread))
         .route("/search", get(search))
+        .route("/search/replace", post(replace_search))
         .route("/config/data-dir", post(update_data_dir))
         .route("/browse", get(browse))
         .with_state(store);
@@ -222,6 +223,19 @@ async fn thread_events(
 async fn search(State(store): State<Arc<AppStore>>, Query(query): Query<SearchQuery>) -> Response {
     match store.search(query).await {
         Ok(search) => match serde_json::to_value(search) {
+            Ok(value) => axum::Json(value).into_response(),
+            Err(e) => json_error_response(e),
+        },
+        Err(e) => store_error_response(e),
+    }
+}
+
+async fn replace_search(
+    State(store): State<Arc<AppStore>>,
+    axum::Json(request): axum::Json<ReplaceSearchRequest>,
+) -> Response {
+    match store.replace_search(request).await {
+        Ok(result) => match serde_json::to_value(result) {
             Ok(value) => axum::Json(value).into_response(),
             Err(e) => json_error_response(e),
         },

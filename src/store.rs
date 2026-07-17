@@ -102,6 +102,51 @@ enum RewriteEventAction {
     Replace(String),
 }
 
+#[derive(Default)]
+struct ReplacePlan {
+    event_indices: HashMap<String, HashSet<usize>>,
+    history_rows: HashSet<(String, i64)>,
+}
+
+impl ReplacePlan {
+    fn thread_ids(&self) -> HashSet<String> {
+        self.event_indices
+            .keys()
+            .cloned()
+            .chain(self.history_rows.iter().map(|(id, _)| id.clone()))
+            .collect()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.event_indices.values().all(HashSet::is_empty) && self.history_rows.is_empty()
+    }
+
+    fn from_target(target: SearchTarget) -> Result<Self, StoreError> {
+        let mut plan = Self::default();
+        match target.source.as_str() {
+            "events" => {
+                let index = target
+                    .event_index
+                    .ok_or_else(|| StoreError::BadRequest("event_index is required".to_string()))?;
+                plan.event_indices
+                    .entry(target.thread_id)
+                    .or_default()
+                    .insert(index);
+            }
+            "history" => {
+                let ts = target
+                    .history_ts
+                    .ok_or_else(|| StoreError::BadRequest("history_ts is required".to_string()))?;
+                plan.history_rows.insert((target.thread_id, ts));
+            }
+            _ => {
+                return Err(StoreError::BadRequest("该搜索结果不可替换".to_string()));
+            }
+        }
+        Ok(plan)
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("not found: {0}")]
@@ -157,6 +202,7 @@ pub struct AppStore {
     trash_dir: PathBuf,
     metadata_path: PathBuf,
     metadata_lock: Mutex<()>,
+    replace_lock: tokio::sync::Mutex<()>,
 }
 
 impl AppStore {
@@ -180,6 +226,7 @@ impl AppStore {
             trash_dir,
             metadata_path,
             metadata_lock: Mutex::new(()),
+            replace_lock: tokio::sync::Mutex::new(()),
             data_dir: RwLock::new(data_dir),
         })
     }
@@ -584,8 +631,7 @@ impl AppStore {
     }
 
     pub async fn search(&self, query: SearchQuery) -> Result<SearchResponse, StoreError> {
-        let q = normalize_query(Some(&query.q))
-            .ok_or_else(|| StoreError::BadRequest("q is required".to_string()))?;
+        let (q, matcher) = build_search_matcher(&query.q, query.regex)?;
         let offset = query.offset.unwrap_or(0);
         let limit = query.limit.unwrap_or(80).clamp(1, 300);
         let mut threads = self.load_threads().await?;
@@ -610,7 +656,7 @@ impl AppStore {
                 ("first_user_message", thread.first_user_message.as_str()),
                 ("preview", thread.preview.as_str()),
             ] {
-                if contains_ci(text, &q) {
+                if matcher.is_match(text) {
                     record_search_hit(
                         SearchHit {
                             thread_id: thread.id.clone(),
@@ -619,7 +665,10 @@ impl AppStore {
                             source: "threads".to_string(),
                             field: field.to_string(),
                             timestamp: Some(thread.updated_at_text.clone()),
-                            snippet: snippet(text, &q),
+                            snippet: snippet(text, &matcher),
+                            replaceable: false,
+                            event_index: None,
+                            history_ts: None,
                         },
                         offset,
                         limit,
@@ -635,7 +684,7 @@ impl AppStore {
             if !by_id.contains_key(&entry.session_id) {
                 continue;
             }
-            if contains_ci(&entry.text, &q) {
+            if matcher.is_match(&entry.text) {
                 let thread = by_id.get(&entry.session_id);
                 record_search_hit(
                     SearchHit {
@@ -645,7 +694,10 @@ impl AppStore {
                         source: "history".to_string(),
                         field: "text".to_string(),
                         timestamp: Some(entry.ts_text),
-                        snippet: snippet(&entry.text, &q),
+                        snippet: snippet(&entry.text, &matcher),
+                        replaceable: true,
+                        event_index: None,
+                        history_ts: Some(entry.ts),
                     },
                     offset,
                     limit,
@@ -665,7 +717,7 @@ impl AppStore {
                 let Some(text) = event.display_text.as_deref() else {
                     return Ok(());
                 };
-                if contains_ci(text, &q) {
+                if matcher.is_match(text) {
                     record_search_hit(
                         SearchHit {
                             thread_id: thread.id.clone(),
@@ -676,8 +728,11 @@ impl AppStore {
                                 .payload_type
                                 .clone()
                                 .unwrap_or_else(|| event.event_type.clone()),
-                            timestamp: Some(event.timestamp),
-                            snippet: snippet(text, &q),
+                            timestamp: Some(event.timestamp.clone()),
+                            snippet: snippet(text, &matcher),
+                            replaceable: replaceable_event(&event),
+                            event_index: Some(index),
+                            history_ts: None,
                         },
                         offset,
                         limit,
@@ -698,6 +753,99 @@ impl AppStore {
             offset,
             limit,
         })
+    }
+
+    pub async fn replace_search(
+        &self,
+        request: ReplaceSearchRequest,
+    ) -> Result<ReplaceSearchResponse, StoreError> {
+        if !request.confirm {
+            return Err(StoreError::BadRequest(
+                "confirm must be true before replacing".to_string(),
+            ));
+        }
+        let _replace_guard = self.replace_lock.lock().await;
+        let (q, matcher) = build_search_matcher(&request.q, request.regex)?;
+        let plan = if let Some(target) = request.target {
+            ReplacePlan::from_target(target)?
+        } else {
+            self.collect_replace_plan(&matcher).await?
+        };
+        if plan.is_empty() {
+            return Err(StoreError::BadRequest(
+                "没有可替换的事件或历史记录".to_string(),
+            ));
+        }
+
+        let thread_ids = plan.thread_ids();
+        let backup_id = self.backup_replace_plan(&thread_ids, &q).await?;
+        let mut replaced_items = 0usize;
+        let mut replaced_matches = 0usize;
+
+        if !plan.history_rows.is_empty() {
+            let (items, matches) =
+                self.replace_history_rows(&plan.history_rows, &matcher, &request.replacement)?;
+            replaced_items += items;
+            replaced_matches += matches;
+        }
+        for (thread_id, indices) in &plan.event_indices {
+            let thread = self.thread_by_id(thread_id).await?;
+            let path = thread
+                .resolved_rollout_path
+                .as_deref()
+                .ok_or_else(|| StoreError::NotFound(format!("rollout for thread {thread_id}")))?;
+            let (items, matches) = replace_jsonl_event_texts(
+                Path::new(path),
+                indices,
+                &matcher,
+                &request.replacement,
+            )?;
+            replaced_items += items;
+            replaced_matches += matches;
+        }
+
+        Ok(ReplaceSearchResponse {
+            ok: true,
+            replaced_items,
+            replaced_matches,
+            thread_count: thread_ids.len(),
+            backup_id,
+        })
+    }
+
+    async fn collect_replace_plan(
+        &self,
+        matcher: &regex::Regex,
+    ) -> Result<ReplacePlan, StoreError> {
+        let threads = self.load_threads().await?;
+        let thread_ids: HashSet<_> = threads.iter().map(|thread| thread.id.as_str()).collect();
+        let mut plan = ReplacePlan::default();
+        for entry in self.all_history()? {
+            if thread_ids.contains(entry.session_id.as_str()) && matcher.is_match(&entry.text) {
+                plan.history_rows.insert((entry.session_id, entry.ts));
+            }
+        }
+        for thread in threads {
+            let Some(path) = thread.resolved_rollout_path.as_deref() else {
+                continue;
+            };
+            for_each_jsonl_value(Path::new(path), |index, raw| {
+                let event = event_from_value(index, raw)?;
+                if replaceable_event(&event)
+                    && event
+                        .display_text
+                        .as_deref()
+                        .is_some_and(|text| matcher.is_match(text))
+                {
+                    plan.event_indices
+                        .entry(thread.id.clone())
+                        .or_default()
+                        .insert(index);
+                }
+                Ok(())
+            })?;
+        }
+        Ok(plan)
     }
 
     pub async fn export_thread(
@@ -1096,6 +1244,119 @@ impl AppStore {
             let _ = fs::remove_dir_all(&backup_dir);
         }
         result
+    }
+
+    async fn backup_replace_plan(
+        &self,
+        thread_ids: &HashSet<String>,
+        q: &str,
+    ) -> Result<String, StoreError> {
+        let backup_id = format!("{}-search-replace", timestamp_slug());
+        let backup_dir = self.trash_dir.join(&backup_id);
+        fs::create_dir_all(&backup_dir)?;
+        let result = async {
+            let threads = self.load_threads().await?;
+            let selected: Vec<_> = threads
+                .into_iter()
+                .filter(|thread| thread_ids.contains(&thread.id))
+                .collect();
+            if selected.len() != thread_ids.len() {
+                return Err(StoreError::NotFound(
+                    "one or more replacement threads".to_string(),
+                ));
+            }
+
+            let mut paths = HashSet::new();
+            for thread in &selected {
+                if let Some(path) = thread.resolved_rollout_path.as_deref() {
+                    paths.insert(PathBuf::from(path));
+                }
+            }
+            let mut files = Vec::new();
+            for path in paths {
+                files.push(backup_file_with_manifest(&path, &backup_dir, "session")?);
+            }
+            let history_path = self.history_path.read().unwrap().clone();
+            if history_path.exists() {
+                files.push(backup_file_with_manifest(
+                    &history_path,
+                    &backup_dir,
+                    "history",
+                )?);
+            }
+
+            let thread_id = if thread_ids.len() == 1 {
+                thread_ids.iter().next().cloned().unwrap_or_default()
+            } else {
+                format!("批量替换（{} 个会话）", thread_ids.len())
+            };
+            let manifest = BackupManifest {
+                id: backup_id.clone(),
+                thread_id,
+                created_at: Utc::now().to_rfc3339(),
+                note: Some(format!("替换“{q}”前自动备份")),
+                path: backup_dir.display().to_string(),
+                files,
+            };
+            fs::write(
+                backup_dir.join("manifest.json"),
+                serde_json::to_string_pretty(&manifest)?,
+            )?;
+            self.update_metadata(|metadata| metadata.backups.push(manifest))?;
+            Ok(backup_id.clone())
+        }
+        .await;
+
+        if result.is_err() {
+            let _ = fs::remove_dir_all(&backup_dir);
+        }
+        result
+    }
+
+    fn replace_history_rows(
+        &self,
+        targets: &HashSet<(String, i64)>,
+        matcher: &regex::Regex,
+        replacement: &str,
+    ) -> Result<(usize, usize), StoreError> {
+        let history_path = self.history_path.read().unwrap().clone();
+        if !history_path.exists() {
+            return Ok((0, 0));
+        }
+        let file = fs::File::open(&history_path)?;
+        let mut lines = Vec::new();
+        let mut replaced_items = 0usize;
+        let mut replaced_matches = 0usize;
+        for line in BufReader::new(file).lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let mut value: Value = serde_json::from_str(&line)?;
+            let session_id = value
+                .get("session_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let ts = value.get("ts").and_then(Value::as_i64).unwrap_or_default();
+            if targets.contains(&(session_id.to_string(), ts))
+                && let Some(text) = value.get("text").and_then(Value::as_str)
+            {
+                let (next, matches) = replace_regex_text(text, matcher, replacement);
+                if matches > 0 {
+                    let object = value.as_object_mut().ok_or_else(|| {
+                        StoreError::BadRequest("history row is not an object".to_string())
+                    })?;
+                    object.insert("text".to_string(), Value::String(next));
+                    replaced_items += 1;
+                    replaced_matches += matches;
+                }
+            }
+            lines.push(serde_json::to_string(&value)?);
+        }
+        if replaced_items > 0 {
+            atomic_write_lines(&history_path, &lines)?;
+        }
+        Ok((replaced_items, replaced_matches))
     }
 
     pub async fn restore_backup(
@@ -2173,6 +2434,110 @@ fn display_text(payload: &Value, event_type: &str, payload_type: Option<&str>) -
     }
 }
 
+fn replaceable_event(event: &SessionEvent) -> bool {
+    matches!(
+        (event.event_type.as_str(), event.payload_type.as_deref()),
+        ("response_item", Some("message"))
+            | ("response_item", Some("function_call_output"))
+            | ("response_item", Some("custom_tool_call"))
+            | ("response_item", Some("custom_tool_call_output"))
+            | ("response_item", Some("reasoning"))
+            | ("event_msg", Some("user_message"))
+            | ("event_msg", Some("agent_message"))
+            | ("event_msg", Some("task_complete"))
+            | ("compacted", _)
+    )
+}
+
+fn replace_event_text_fields(raw: &mut Value, matcher: &regex::Regex, replacement: &str) -> usize {
+    let event_type = raw
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let Some(payload) = raw.get_mut("payload") else {
+        return 0;
+    };
+    let payload_type = payload
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    match (event_type.as_str(), payload_type.as_str()) {
+        ("response_item", "message") => payload
+            .get_mut("content")
+            .and_then(Value::as_array_mut)
+            .map(|items| {
+                items
+                    .iter_mut()
+                    .map(|item| replace_object_string(item, "text", matcher, replacement))
+                    .sum()
+            })
+            .unwrap_or_default(),
+        ("response_item", "function_call_output")
+        | ("response_item", "custom_tool_call_output") => {
+            replace_object_string(payload, "output", matcher, replacement)
+        }
+        ("response_item", "custom_tool_call") => {
+            replace_object_string(payload, "input", matcher, replacement)
+        }
+        ("response_item", "reasoning") => payload
+            .get_mut("summary")
+            .and_then(Value::as_array_mut)
+            .map(|items| {
+                items
+                    .iter_mut()
+                    .map(|item| replace_string_value(item, matcher, replacement))
+                    .sum()
+            })
+            .unwrap_or_default(),
+        ("event_msg", "user_message") | ("event_msg", "agent_message") => {
+            replace_object_string(payload, "message", matcher, replacement)
+        }
+        ("event_msg", "task_complete") => {
+            replace_object_string(payload, "last_agent_message", matcher, replacement)
+        }
+        ("compacted", _) => replace_object_string(payload, "message", matcher, replacement),
+        _ => 0,
+    }
+}
+
+fn replace_object_string(
+    object: &mut Value,
+    key: &str,
+    matcher: &regex::Regex,
+    replacement: &str,
+) -> usize {
+    object
+        .get_mut(key)
+        .map(|value| replace_string_value(value, matcher, replacement))
+        .unwrap_or_default()
+}
+
+fn replace_string_value(value: &mut Value, matcher: &regex::Regex, replacement: &str) -> usize {
+    let Some(text) = value.as_str() else {
+        return 0;
+    };
+    let (next, matches) = replace_regex_text(text, matcher, replacement);
+    if matches > 0 {
+        *value = Value::String(next);
+    }
+    matches
+}
+
+fn replace_regex_text(text: &str, matcher: &regex::Regex, replacement: &str) -> (String, usize) {
+    let matches = matcher.find_iter(text).count();
+    if matches == 0 {
+        return (text.to_string(), 0);
+    }
+    (
+        matcher
+            .replace_all(text, regex::NoExpand(replacement))
+            .into_owned(),
+        matches,
+    )
+}
+
 fn token_count_text(payload: &Value) -> Option<String> {
     let info = payload.get("info")?;
     let total_usage = info.get("total_token_usage").unwrap_or(&Value::Null);
@@ -2368,6 +2733,26 @@ fn contains_ci(haystack: &str, q: &str) -> bool {
     haystack.to_lowercase().contains(q)
 }
 
+fn build_search_matcher(
+    query: &str,
+    regex_enabled: bool,
+) -> Result<(String, regex::Regex), StoreError> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Err(StoreError::BadRequest("q is required".to_string()));
+    }
+    let pattern = if regex_enabled {
+        query.to_string()
+    } else {
+        regex::escape(query)
+    };
+    let matcher = regex::RegexBuilder::new(&pattern)
+        .case_insensitive(true)
+        .build()
+        .map_err(|error| StoreError::BadRequest(format!("无效的正则表达式: {error}")))?;
+    Ok((query.to_string(), matcher))
+}
+
 fn record_search_hit(
     hit: SearchHit,
     offset: usize,
@@ -2383,12 +2768,11 @@ fn record_search_hit(
     *total += 1;
 }
 
-fn snippet(text: &str, q: &str) -> String {
-    let lower = text.to_lowercase();
-    let Some(pos) = lower.find(q) else {
+fn snippet(text: &str, matcher: &regex::Regex) -> String {
+    let Some(found) = matcher.find(text) else {
         return text.chars().take(180).collect();
     };
-    let start = text[..pos].chars().count().saturating_sub(60);
+    let start = text[..found.start()].chars().count().saturating_sub(60);
     let end = start + 180;
     let chars: Vec<_> = text.chars().collect();
     let mut out: String = chars[start..chars.len().min(end)].iter().collect();
@@ -2449,6 +2833,53 @@ where
     }
     fs::write(&temp_path, output)?;
     fs::rename(temp_path, path)?;
+    Ok(())
+}
+
+fn replace_jsonl_event_texts(
+    path: &Path,
+    target_indices: &HashSet<usize>,
+    matcher: &regex::Regex,
+    replacement: &str,
+) -> Result<(usize, usize), StoreError> {
+    let file = fs::File::open(path)?;
+    let mut lines = Vec::new();
+    let mut replaced_items = 0usize;
+    let mut replaced_matches = 0usize;
+    for (index, line) in BufReader::new(file).lines().enumerate() {
+        let line = line?;
+        if !target_indices.contains(&index) {
+            lines.push(line);
+            continue;
+        }
+        let mut raw: Value = serde_json::from_str(&line)?;
+        let matches = replace_event_text_fields(&mut raw, matcher, replacement);
+        if matches > 0 {
+            lines.push(serde_json::to_string(&raw)?);
+            replaced_items += 1;
+            replaced_matches += matches;
+        } else {
+            lines.push(line);
+        }
+    }
+    if replaced_items > 0 {
+        atomic_write_lines(path, &lines)?;
+    }
+    Ok((replaced_items, replaced_matches))
+}
+
+fn atomic_write_lines(path: &Path, lines: &[String]) -> Result<(), StoreError> {
+    let mut output = lines.join("\n");
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    let temp_path = sibling_path(path, ".write_tmp");
+    fs::write(&temp_path, output)?;
+    if let Err(error) = atomic_replace_file(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error.into());
+    }
+    let _ = fs::remove_file(temp_path);
     Ok(())
 }
 
@@ -2719,7 +3150,19 @@ mod tests {
     #[test]
     fn creates_snippet_around_match() {
         let text = "0123456789abcdefghijklmnopqrstuvwxyz";
-        assert!(snippet(text, "mnop").contains("mnop"));
+        let (_, matcher) = build_search_matcher("mnop", false).unwrap();
+        assert!(snippet(text, &matcher).contains("mnop"));
+    }
+
+    #[test]
+    fn builds_regex_search_matcher_and_rejects_invalid_pattern() {
+        let (_, matcher) = build_search_matcher(r"^original\s+message$", true).unwrap();
+        assert!(matcher.is_match("Original message"));
+        assert!(!matcher.is_match("prefix original message"));
+        assert!(matches!(
+            build_search_matcher("(", true),
+            Err(StoreError::BadRequest(message)) if message.starts_with("无效的正则表达式:")
+        ));
     }
 
     #[test]
@@ -2737,6 +3180,9 @@ mod tests {
                     field: "message".to_string(),
                     timestamp: None,
                     snippet: format!("hit-{total}"),
+                    replaceable: true,
+                    event_index: Some(total),
+                    history_ts: None,
                 },
                 1,
                 2,
@@ -2980,6 +3426,87 @@ mod tests {
                 Some(expected.as_str())
             );
         }
+    }
+
+    #[tokio::test]
+    async fn replaces_one_event_and_keeps_history_unchanged() {
+        let fixture = create_test_store().await;
+        let result = fixture
+            .store
+            .replace_search(ReplaceSearchRequest {
+                q: "original".to_string(),
+                regex: false,
+                replacement: "changed".to_string(),
+                confirm: true,
+                target: Some(SearchTarget {
+                    source: "events".to_string(),
+                    thread_id: "thread-1".to_string(),
+                    event_index: Some(0),
+                    history_ts: None,
+                }),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.replaced_items, 1);
+        assert_eq!(result.replaced_matches, 1);
+        assert!(
+            fs::read_to_string(&fixture.session_path)
+                .unwrap()
+                .contains("changed")
+        );
+        assert!(
+            fs::read_to_string(&fixture.history_path)
+                .unwrap()
+                .contains("original history")
+        );
+        assert_eq!(fixture.store.list_backups().unwrap().items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn replaces_all_results_and_can_restore_batch_backup() {
+        let fixture = create_test_store().await;
+        let result = fixture
+            .store
+            .replace_search(ReplaceSearchRequest {
+                q: "ORIGINAL".to_string(),
+                regex: false,
+                replacement: "$1 replacement".to_string(),
+                confirm: true,
+                target: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.replaced_items, 2);
+        assert_eq!(result.replaced_matches, 2);
+        assert_eq!(result.thread_count, 1);
+        assert!(
+            fs::read_to_string(&fixture.session_path)
+                .unwrap()
+                .contains("$1 replacement")
+        );
+        assert!(
+            fs::read_to_string(&fixture.history_path)
+                .unwrap()
+                .contains("$1 replacement history")
+        );
+
+        fixture
+            .store
+            .restore_backup(&result.backup_id, RestoreRequest { confirm: true })
+            .await
+            .unwrap();
+        assert!(
+            fs::read_to_string(&fixture.session_path)
+                .unwrap()
+                .contains("original")
+        );
+        assert!(
+            fs::read_to_string(&fixture.history_path)
+                .unwrap()
+                .contains("original history")
+        );
     }
 
     #[test]

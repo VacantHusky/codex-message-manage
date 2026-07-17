@@ -38,9 +38,29 @@ pub struct HistoryQuery {
 #[derive(Debug, Deserialize)]
 pub struct SearchQuery {
     pub q: String,
+    #[serde(default)]
+    pub regex: bool,
     pub thread_id: Option<String>,
     pub offset: Option<usize>,
     pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReplaceSearchRequest {
+    pub q: String,
+    #[serde(default)]
+    pub regex: bool,
+    pub replacement: String,
+    pub confirm: bool,
+    pub target: Option<SearchTarget>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct SearchTarget {
+    pub source: String,
+    pub thread_id: String,
+    pub event_index: Option<usize>,
+    pub history_ts: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -348,6 +368,18 @@ pub struct SearchHit {
     pub field: String,
     pub timestamp: Option<String>,
     pub snippet: String,
+    pub replaceable: bool,
+    pub event_index: Option<usize>,
+    pub history_ts: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReplaceSearchResponse {
+    pub ok: bool,
+    pub replaced_items: usize,
+    pub replaced_matches: usize,
+    pub thread_count: usize,
+    pub backup_id: String,
 }
 
 #[derive(Debug, Serialize)]

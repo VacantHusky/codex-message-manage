@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   CaretBottom,
   CaretRight,
@@ -8,6 +8,7 @@ import {
   InfoFilled,
   Management,
   Refresh,
+  RefreshRight,
   Search,
   Setting,
 } from '@element-plus/icons-vue'
@@ -19,8 +20,10 @@ import {
   formatCount,
   formatTimestamp,
   runtimeLabel,
+  searchFieldName,
+  searchSourceName,
 } from '../utils/format'
-import { apiGet, type BackupInfo, type Overview, type SearchHit, type SearchResponse, type ThreadSummary } from '../api'
+import { apiGet, apiPost, type BackupInfo, type Overview, type ReplaceSearchResponse, type SearchHit, type SearchResponse, type ThreadSummary } from '../api'
 
 type SidebarPanel = 'sessions' | 'search' | 'backup' | 'info' | 'settings'
 
@@ -48,6 +51,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'select-thread', thread: ThreadSummary): void
   (e: 'search-hit', hit: SearchHit): void
+  (e: 'search-replaced'): void
   (e: 'reload'): void
   (e: 'open-stats'): void
   (e: 'load-backups'): void
@@ -62,6 +66,7 @@ const filtersExpanded = ref(false)
 const replaceExpanded = ref(false)
 const searchText = ref('')
 const replaceText = ref('')
+const regexEnabled = ref(false)
 const searchHasQuery = computed(() => searchText.value.trim().length > 0)
 const searchResults = ref<SearchHit[]>([])
 const searchTotal = ref(0)
@@ -69,7 +74,32 @@ const searchThreadCount = ref(0)
 const searchPage = ref(1)
 const searchPageSize = 30
 const loadingSearch = ref(false)
+const replacingAll = ref(false)
+const replacingHit = ref('')
+const collapsedSearchGroups = ref(new Set<string>())
 const searchResultLabel = computed(() => `${formatCount(searchTotal.value)} 个结果，包含于 ${formatCount(searchThreadCount.value)} 个会话中`)
+const searchGroups = computed(() => {
+  const groups = new Map<string, {
+    threadId: string
+    title: string
+    cwd?: string
+    items: SearchHit[]
+  }>()
+  for (const hit of searchResults.value) {
+    let group = groups.get(hit.thread_id)
+    if (!group) {
+      group = {
+        threadId: hit.thread_id,
+        title: hit.title || hit.thread_id,
+        cwd: hit.cwd,
+        items: [],
+      }
+      groups.set(hit.thread_id, group)
+    }
+    group.items.push(hit)
+  }
+  return Array.from(groups.values())
+})
 let searchTimer: ReturnType<typeof window.setTimeout> | undefined
 let searchRequestId = 0
 
@@ -108,6 +138,7 @@ async function loadSearchResults(reset = false) {
   try {
     const data = await apiGet<SearchResponse>('/api/search', {
       q,
+      regex: regexEnabled.value,
       offset: (searchPage.value - 1) * searchPageSize,
       limit: searchPageSize,
     })
@@ -135,6 +166,60 @@ function scheduleSearchChange() {
   }, 350)
 }
 
+function searchHitKey(hit: SearchHit) {
+  return `${hit.source}:${hit.thread_id}:${hit.event_index ?? hit.history_ts ?? ''}:${hit.field}:${hit.timestamp ?? ''}`
+}
+
+function toggleSearchGroup(threadId: string) {
+  const next = new Set(collapsedSearchGroups.value)
+  if (next.has(threadId)) next.delete(threadId)
+  else next.add(threadId)
+  collapsedSearchGroups.value = next
+}
+
+async function replaceSearchHit(hit?: SearchHit) {
+  const q = searchText.value.trim()
+  if (!q) return
+  const label = replaceText.value || '空文本'
+  const targetText = hit ? '该条搜索结果' : '所有可替换结果'
+  try {
+    await ElMessageBox.confirm(
+      `将${targetText}中的“${q}”替换为“${label}”。操作前会自动创建备份。`,
+      hit ? '替换该条' : '全部替换',
+      {
+        confirmButtonText: '替换',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+    const key = hit ? searchHitKey(hit) : ''
+    if (hit) replacingHit.value = key
+    else replacingAll.value = true
+    const result = await apiPost<ReplaceSearchResponse>('/api/search/replace', {
+      q,
+      regex: regexEnabled.value,
+      replacement: replaceText.value,
+      confirm: true,
+      target: hit
+        ? {
+            source: hit.source,
+            thread_id: hit.thread_id,
+            event_index: hit.event_index,
+            history_ts: hit.history_ts,
+          }
+        : undefined,
+    })
+    ElMessage.success(`已替换 ${formatCount(result.replaced_items)} 条，共 ${formatCount(result.replaced_matches)} 处`)
+    await loadSearchResults(true)
+    emit('search-replaced')
+  } catch (error) {
+    if (error instanceof Error) ElMessage.error(error.message)
+  } finally {
+    replacingAll.value = false
+    replacingHit.value = ''
+  }
+}
+
 const tokenMax = computed(() => props.overview?.max_tokens_used ?? 0)
 const tokenSliderMax = computed(() => Math.max(tokenMax.value, 1000))
 const tokenStep = computed(() => (tokenSliderMax.value >= 1_000_000 ? 10_000 : 1000))
@@ -153,6 +238,10 @@ watch(activePanel, (panel) => {
   if (panel === 'backup') {
     emit('load-backups')
   }
+})
+
+watch(regexEnabled, () => {
+  if (searchHasQuery.value) void loadSearchResults(true)
 })
 
 onUnmounted(() => {
@@ -305,7 +394,10 @@ onUnmounted(() => {
         <section v-if="activePanel === 'sessions'" class="session-tools">
           <button class="filter-toggle" type="button" @click="filtersExpanded = !filtersExpanded">
             <span>筛选</span>
-            <span class="muted">{{ filtersExpanded ? '收起' : '展开' }}</span>
+            <el-icon>
+              <CaretBottom v-if="filtersExpanded" />
+              <CaretRight v-else />
+            </el-icon>
           </button>
 
           <div v-show="filtersExpanded" class="filters">
@@ -382,6 +474,7 @@ onUnmounted(() => {
             </button>
             <el-input
               v-model="searchText"
+              class="search-input"
               :prefix-icon="Search"
               clearable
               placeholder="搜索"
@@ -389,6 +482,13 @@ onUnmounted(() => {
               @keyup.enter="handleSearchChange"
               @clear="handleSearchChange"
             />
+            <el-tooltip content="使用正则表达式" placement="top">
+              <el-checkbox-button
+                v-model="regexEnabled"
+                class="regex-toggle"
+                aria-label="使用正则表达式"
+              >.*</el-checkbox-button>
+            </el-tooltip>
             <el-input
               v-if="replaceExpanded"
               v-model="replaceText"
@@ -396,6 +496,17 @@ onUnmounted(() => {
               clearable
               placeholder="替换"
             />
+            <el-tooltip v-if="replaceExpanded" content="全部替换" placement="right">
+              <el-button
+                class="replace-all-button"
+                :icon="RefreshRight"
+                :loading="replacingAll"
+                circle
+                text
+                aria-label="全部替换"
+                @click="replaceSearchHit()"
+              />
+            </el-tooltip>
           </div>
         </section>
 
@@ -454,30 +565,60 @@ onUnmounted(() => {
           }"
         />
         <template v-else-if="searchHasQuery">
-          <el-table
-            class="thread-table"
+          <section
+            class="search-results"
             v-loading="loadingSearch"
-            :data="searchResults"
-            height="100%"
-            @row-click="(row: SearchHit) => emit('search-hit', row)"
           >
-            <el-table-column :label="searchResultLabel">
-              <template #default="{ row }">
-                <div class="thread-title truncate" :title="row.title || row.thread_id">
-                  {{ row.title || row.thread_id }}
+            <header class="search-results-header">{{ searchResultLabel }}</header>
+            <div class="search-groups">
+              <section v-for="group in searchGroups" :key="group.threadId" class="search-group">
+                <button class="search-group-header" type="button" @click="toggleSearchGroup(group.threadId)">
+                  <el-icon>
+                    <CaretRight v-if="collapsedSearchGroups.has(group.threadId)" />
+                    <CaretBottom v-else />
+                  </el-icon>
+                  <span class="search-group-title truncate" :title="group.title">{{ group.title }}</span>
+                  <span class="search-group-count">{{ group.items.length }}</span>
+                </button>
+                <div v-if="!collapsedSearchGroups.has(group.threadId)" class="search-group-items">
+                  <article
+                    v-for="hit in group.items"
+                    :key="searchHitKey(hit)"
+                    class="search-hit-row"
+                    @click="emit('search-hit', hit)"
+                  >
+                    <div class="search-hit-main">
+                      <div class="search-snippet prewrap">{{ hit.snippet }}</div>
+                      <div class="thread-tags">
+                        <el-tag size="small" effect="plain">{{ searchSourceName(hit.source) }}</el-tag>
+                        <el-tag size="small" effect="plain" type="info">{{ searchFieldName(hit.field) }}</el-tag>
+                        <span v-if="hit.timestamp" class="thread-meta" :title="hit.timestamp">
+                          {{ formatTimestamp(hit.timestamp) }}
+                        </span>
+                      </div>
+                    </div>
+                    <el-tooltip
+                      v-if="replaceExpanded"
+                      :content="hit.replaceable ? '替换该条' : '该结果是派生信息，不可直接替换'"
+                      placement="left"
+                    >
+                      <span class="search-hit-action">
+                        <el-button
+                          :icon="RefreshRight"
+                          :disabled="!hit.replaceable"
+                          :loading="replacingHit === searchHitKey(hit)"
+                          circle
+                          text
+                          aria-label="替换该条"
+                          @click.stop="replaceSearchHit(hit)"
+                        />
+                      </span>
+                    </el-tooltip>
+                  </article>
                 </div>
-                <div class="thread-meta truncate" :title="row.cwd">{{ row.cwd || '-' }}</div>
-                <div class="search-snippet prewrap">{{ row.snippet }}</div>
-                <div class="thread-tags">
-                  <el-tag size="small" effect="plain">{{ row.source }}</el-tag>
-                  <el-tag size="small" effect="plain" type="info">{{ row.field }}</el-tag>
-                  <span v-if="row.timestamp" class="thread-meta" :title="row.timestamp">
-                    {{ formatTimestamp(row.timestamp) }}
-                  </span>
-                </div>
-              </template>
-            </el-table-column>
-          </el-table>
+              </section>
+            </div>
+          </section>
           <el-pagination
             class="pager"
             layout="prev, pager, next"
@@ -686,9 +827,31 @@ onUnmounted(() => {
 
 .search-stack {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-columns: 24px minmax(0, 1fr) 32px;
   gap: 8px;
   align-items: center;
+}
+
+.search-input {
+  grid-column: 2;
+}
+
+.regex-toggle {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.regex-toggle :deep(.el-checkbox-button__inner) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  padding: 0;
+  font-family: monospace;
+  font-weight: 700;
 }
 
 .replace-toggle {
@@ -710,6 +873,94 @@ onUnmounted(() => {
 
 .replace-input {
   grid-column: 2;
+}
+
+.replace-all-button {
+  grid-column: 3;
+  grid-row: 2;
+  margin: 0;
+}
+
+.search-results-header {
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f7f8fa;
+  color: #2d3748;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.search-groups {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.search-group {
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.search-group-header {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 38px;
+  padding: 7px 9px;
+  border: 0;
+  background: #fafbfc;
+  color: #2d3748;
+  cursor: pointer;
+  text-align: left;
+}
+
+.search-group-header:hover {
+  background: #f1f5f9;
+}
+
+.search-group-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.search-group-count {
+  min-width: 22px;
+  color: #697386;
+  font-size: 12px;
+  text-align: right;
+}
+
+.search-group-items {
+  position: relative;
+  margin-left: 17px;
+  border-left: 1px solid #cbd5e1;
+}
+
+.search-hit-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 52px;
+  padding: 7px 7px 7px 12px;
+  border-top: 1px solid #edf0f5;
+  cursor: pointer;
+}
+
+.search-hit-row:hover {
+  background: #f8faff;
+}
+
+.search-hit-main {
+  min-width: 0;
+}
+
+.search-hit-action {
+  display: inline-flex;
+  width: 32px;
+  justify-content: center;
 }
 
 .search-empty {
@@ -761,7 +1012,7 @@ onUnmounted(() => {
 .token-slider-wrap {
   box-sizing: border-box;
   min-width: 0;
-  padding: 0 8px;
+  padding: 0 16px;
 }
 
 .token-slider-wrap :deep(.el-slider) {
@@ -785,6 +1036,14 @@ onUnmounted(() => {
   flex-wrap: wrap;
   gap: 4px;
   margin-top: 5px;
+}
+
+.search-results {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .thread-table {

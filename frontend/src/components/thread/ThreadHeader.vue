@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Delete, EditPen, FolderOpened, View } from '@element-plus/icons-vue'
+import { Delete, EditPen, FolderOpened } from '@element-plus/icons-vue'
 import {
   compactTitle,
   formatCount,
@@ -17,7 +17,6 @@ defineProps<{
 const emit = defineEmits<{
   (e: 'edit'): void
   (e: 'backup'): void
-  (e: 'archive', archived: boolean): void
   (e: 'delete'): void
 }>()
 </script>
@@ -58,12 +57,6 @@ const emit = defineEmits<{
     <div class="actions">
       <el-button @click="emit('edit')" :icon="EditPen">编辑</el-button>
       <el-button :loading="backingUp" @click="emit('backup')">备份</el-button>
-      <el-button
-        :icon="View"
-        @click="emit('archive', !selectedThread.archived)"
-      >
-        {{ selectedThread.archived ? '取消归档' : '归档' }}
-      </el-button>
       <el-button type="danger" :icon="Delete" @click="emit('delete')">删除</el-button>
     </div>
   </header>

@@ -130,6 +130,27 @@ export function eventTypeName(type: string) {
   return eventTypeLabels[type] ?? type
 }
 
+export function searchSourceName(source: string) {
+  const labels: Record<string, string> = {
+    threads: '会话信息',
+    history: '历史',
+    events: '时间线',
+  }
+  return labels[source] ?? source
+}
+
+export function searchFieldName(field: string) {
+  const labels: Record<string, string> = {
+    title: '标题',
+    cwd: '项目目录',
+    first_user_message: '首条用户消息',
+    preview: '预览',
+    text: '正文',
+  }
+  const translated = labels[field] ?? payloadTypeName(field)
+  return translated === field ? eventTypeName(field) : translated
+}
+
 export function eventLabel(event: SessionEvent) {
   return event.payload_type ? payloadTypeName(event.payload_type) : eventTypeName(event.event_type)
 }

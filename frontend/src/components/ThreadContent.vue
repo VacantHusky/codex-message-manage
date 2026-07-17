@@ -50,11 +50,11 @@ const props = defineProps<{
   saveEvent: (index: number, raw: unknown) => Promise<boolean>
   saveTitle: (title: string) => Promise<boolean>
   saveRuntime: (request: UpdateRuntimeRequest) => Promise<boolean>
+  saveArchive: (archived: boolean) => Promise<boolean>
 }>()
 
 const emit = defineEmits<{
   (e: 'backup'): void
-  (e: 'archive', archived: boolean): void
   (e: 'delete'): void
   (e: 'clear-logs'): void
   (e: 'load-events', reset: boolean): void
@@ -99,6 +99,7 @@ const runtimeForm = reactive<UpdateRuntimeRequest>({
 })
 const threadEditVisible = ref(false)
 const titleText = ref('')
+const archivedValue = ref(false)
 const savingRuntime = ref(false)
 const historyEditVisible = ref(false)
 const editingHistory = ref<HistoryEntry | null>(null)
@@ -108,6 +109,7 @@ watch(
   () => props.selectedThread,
   (thread) => {
     titleText.value = thread?.title || ''
+    archivedValue.value = thread?.archived ?? false
     runtimeForm.model_provider = thread?.model_provider || 'openai'
     runtimeForm.sandbox_type = thread?.sandbox_type || 'disabled'
     runtimeForm.approval_mode = thread?.approval_mode || 'on-request'
@@ -124,9 +126,10 @@ async function handleSaveRuntime() {
     const titleOk = await props.saveTitle(titleText.value)
     if (!titleOk) return
     const runtimeOk = await props.saveRuntime({ ...runtimeForm })
-    if (runtimeOk) {
-      threadEditVisible.value = false
-    }
+    if (!runtimeOk) return
+    const archiveOk = archivedValue.value === props.selectedThread?.archived
+      || await props.saveArchive(archivedValue.value)
+    if (archiveOk) threadEditVisible.value = false
   } finally {
     savingRuntime.value = false
   }
@@ -134,6 +137,7 @@ async function handleSaveRuntime() {
 
 function openThreadEdit() {
   titleText.value = props.selectedThread?.title || ''
+  archivedValue.value = props.selectedThread?.archived ?? false
   runtimeForm.model_provider = props.selectedThread?.model_provider || 'openai'
   runtimeForm.sandbox_type = props.selectedThread?.sandbox_type || 'disabled'
   runtimeForm.approval_mode = props.selectedThread?.approval_mode || 'on-request'
@@ -218,7 +222,6 @@ async function handleSaveEdit() {
       :backing-up="backingUp"
       @edit="openThreadEdit"
       @backup="emit('backup')"
-      @archive="(archived) => emit('archive', archived)"
       @delete="emit('delete')"
     />
 
@@ -334,9 +337,11 @@ async function handleSaveEdit() {
     <ThreadEditDrawer
       v-model:visible="threadEditVisible"
       :title-text="titleText"
+      :archived="archivedValue"
       :runtime-form="runtimeForm"
       :saving-runtime="savingRuntime"
       @update:title-text="(value) => titleText = value"
+      @update:archived="(value) => archivedValue = value"
       @save="handleSaveRuntime"
     />
 
