@@ -131,12 +131,13 @@ jobs:
           fi
           title="Codex Message Manage ${tag}"
           cat > release-notes.md <<'EOF'
-          第一个公开版本。
+          Codex Message Manage v0.1.1。
 
           包含内容：
-          - 本地 Codex 会话列表、详情和时间线浏览
-          - 会话标题、运行信息和历史记录编辑
-          - 会话备份、删除、恢复和统计
+          - 会话、时间线和历史记录分页浏览及编辑
+          - 会话级搜索与跨会话正则搜索、批量替换
+          - 会话备份、彻底删除、恢复和统计
+          - 会话标题、归档状态及运行信息编辑
           - Linux、Windows、macOS 常见平台构建包
 
           使用方式：
